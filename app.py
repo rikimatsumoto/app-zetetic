@@ -302,6 +302,24 @@ def _validate_portfolio_json(raw_bytes: bytes) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════════════
+# METRIC GLOSSARY — reused in Dashboard and Report tabs
+# ══════════════════════════════════════════════════════════════════════════════
+_METRIC_GLOSSARY = """
+| Metric | What it means | How to read it |
+|--------|--------------|----------------|
+| **Total Return** | Percentage gain/loss since execution. | +15% = grew 15%. Negative = lost money. |
+| **Net Return** | Total return minus the AI generation cost — your *true* profit. | Compare to Total Return to see if AI cost is material. |
+| **Annualized Return** | Return scaled to a per-year rate. | Makes strategies with different time periods comparable. 8–12% annually is a solid benchmark. |
+| **Max Drawdown** | Largest peak-to-trough drop observed. | Lower is better. 10% means the portfolio once fell 10% from its high. Above 30% = aggressive risk. |
+| **Volatility** | How much the portfolio swings day-to-day (annualized). | Lower = smoother ride. Under 15% is relatively stable; above 30% is very bumpy. |
+| **Sharpe Ratio** | Return per unit of *total* risk (volatility). | Higher is better. Above **1.0** = good; above **2.0** = excellent; below **0** = losing vs risk-free rate. |
+| **Sortino Ratio** | Like Sharpe, but only penalises *downside* swings. | Higher is better. Rewards strategies that swing up but not down. A Sortino > Sharpe means most volatility is on the upside. |
+| **Calmar Ratio** | Annualized return ÷ max drawdown. | Higher is better. Shows how well you're compensated for the worst dip. Above **1.0** = good; above **3.0** = excellent. |
+| **Win Rate** | Percentage of trading days with a positive return. | Higher is better. 50–55% is typical; above 55% shows consistent daily gains. |
+| **Profit Factor** | Sum of all gains ÷ sum of all losses. | Above **1.0** = gaining more than losing. Above **1.5** = strong. Below 1.0 = losses outweigh gains. |
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG & CSS
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
@@ -791,20 +809,7 @@ Each strategy is tagged with a risk level:
 
     # ── Report Metrics ────────────────────────────────────────────────────
     st.subheader("📊 Understanding Report Metrics")
-    st.markdown("""
-| Metric | What it tells you |
-|--------|------------------|
-| **Total Return** | How much your portfolio gained or lost as a percentage |
-| **Net Return** | Total return minus the AI generation cost — your "true" profit |
-| **Annualized Return** | Return scaled to a per-year rate, useful for comparing strategies with different time periods |
-| **Max Drawdown** | The worst peak-to-trough drop observed — measures downside risk |
-| **Volatility** | How much the portfolio value swings day-to-day (lower = smoother ride) |
-| **Sharpe Ratio** | Return per unit of risk. Above 1.0 is generally considered good; above 2.0 is excellent |
-| **Sortino Ratio** | Like Sharpe but only penalises *downside* volatility — better for strategies with asymmetric returns |
-| **Calmar Ratio** | Annualized return divided by max drawdown — how well you're compensated for the worst dip |
-| **Win Rate** | Percentage of days with positive returns — consistency indicator |
-| **Profit Factor** | Total gains ÷ total losses — above 1.0 means gains outweigh losses |
-""")
+    st.markdown(_METRIC_GLOSSARY)
 
     st.divider()
 
@@ -1171,14 +1176,23 @@ with tab_dashboard:
                 m = compute_metrics(port, current_prices)
                 with metric_cols[col_idx % len(metric_cols)]:
                     st.markdown(f"**{port['model_label']}**")
+
+                    # Row 1: Risk-adjusted ratios
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Sharpe", f"{m['sharpe_ratio']:.2f}")
                     c2.metric("Sortino", f"{m['sortino_ratio']:.2f}")
                     c3.metric("Calmar", f"{m['calmar_ratio']:.2f}")
-                    st.caption(
-                        f"Vol: {m['volatility']:.1%} · "
-                        f"Max DD: {m['max_drawdown']:.1%}"
-                    )
+
+                    # Row 2: Risk & consistency metrics
+                    r1, r2, r3, r4 = st.columns(4)
+                    r1.metric("Max DD", f"{m['max_drawdown']:.1%}")
+                    r2.metric("Volatility", f"{m['volatility']:.1%}")
+                    r3.metric("Win Rate", f"{m['win_rate']:.0%}")
+                    r4.metric("Profit Factor", f"{m['profit_factor']:.2f}")
+
+            # Collapsed glossary for metric explanations
+            with st.expander("ℹ️ What do these metrics mean?", expanded=False):
+                st.markdown(_METRIC_GLOSSARY)
 
         # ── Performance Chart ─────────────────────────────────────────────
         if any_with_history:
@@ -1492,6 +1506,7 @@ with tab_report:
                         "Net Return": f"{m['net_return_pct']:+.2%}",
                         "Ann. Return": f"{m['annualized_return']:+.2%}",
                         "Max Drawdown": f"{m['max_drawdown']:.2%}",
+                        "Volatility": f"{m['volatility']:.1%}",
                         "Sharpe": f"{m['sharpe_ratio']:.2f}",
                         "Sortino": f"{m['sortino_ratio']:.2f}",
                         "Calmar": f"{m['calmar_ratio']:.2f}",
@@ -1504,6 +1519,10 @@ with tab_report:
                 st.dataframe(
                     pd.DataFrame(metrics_table), use_container_width=True, hide_index=True
                 )
+
+                # Collapsed glossary for metric explanations
+                with st.expander("ℹ️ What do these metrics mean?", expanded=False):
+                    st.markdown(_METRIC_GLOSSARY)
 
                 # ── Visual Charts ─────────────────────────────────────────
                 if len(all_rpt_metrics) > 0:
