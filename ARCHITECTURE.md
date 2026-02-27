@@ -10,7 +10,7 @@ Zetetic is a 6-module Streamlit application. A user's investment thesis flows th
 │                                                                     │
 │  Tab 1: Thesis ─────────────────────────────────────────────────┐   │
 │  │  User writes investment narrative                            │   │
-│  │  → strategy_generator.py (Anthropic / xAI / Ollama)         │   │
+│  │  → strategy_generator.py (Anthropic / xAI / Google / Ollama) │   │
 │  │  → session_state["model_results"] + ["model_usages"]        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
@@ -20,16 +20,18 @@ Zetetic is a 6-module Streamlit application. A user's investment thesis flows th
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  Tab 3: Dashboard ──────────────────────────────────────────────┐   │
-│  │  KPI cards, risk-adjusted metrics (Sharpe/Sortino/Calmar),   │   │
-│  │  perf chart ($/% toggle), holdings detail, Excel/JSON        │   │
-│  │  export, transaction ledger (diagnostic expander)            │   │
+│  │  KPI cards, risk metrics (Sharpe/Sortino/Calmar/Max DD/      │   │
+│  │  Volatility/Win Rate/Profit Factor), perf chart ($/% toggle),│   │
+│  │  holdings detail, metric glossary expander, transaction       │   │
+│  │  ledger (diagnostic expander)                                │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  Tab 4: Report ────────────────────────────────────────────────┐   │
-│  │  Metrics table, 5 Plotly charts, .md + .xlsx download        │   │
+│  │  Metrics table, 7 Plotly charts, metric glossary expander,   │   │
+│  │  .md + .xlsx download                                        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
-│  Sidebar: Model config, portfolio settings, reset,                  │
+│  Sidebar: Model config (4 providers), portfolio settings, reset,   │
 │           multi-file JSON import, AI cost tracker                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -38,12 +40,14 @@ Zetetic is a 6-module Streamlit application. A user's investment thesis flows th
 
 ## Module Reference
 
-### `app.py` — UI Controller (~1650 lines)
+### `app.py` — UI Controller (~1830 lines)
 
 Entry point. Owns all session state. Contains:
 - **Security validation** (`_validate_portfolio_json`): 10 checks on every JSON import (size, UTF-8, structure, types, string sanitization, ticker format, numeric ranges, date validation, nested payload caps)
 - **Day-0 detection** (`_is_day_zero`): gates meaningless metrics for same-day execution
 - **Multi-file import**: `accept_multiple_files=True` with per-file identity tracking (`_import_file_ids` list + `_import_file_to_keys` dict) so each file can be added or removed independently
+- **`_METRIC_GLOSSARY`**: shared markdown constant used by Guide tab, Dashboard expander, and Report expander — single source of truth for all metric definitions with practical "how to read it" guidance
+- **Ollama cloud auto-disable**: 3-layer detection (env vars → hostname → localhost probe); Ollama only appears in provider dropdown when locally reachable
 
 **Session state keys:**
 
@@ -61,21 +65,35 @@ Entry point. Owns all session state. Contains:
 
 **Tab 3 Dashboard features:**
 - KPI cards with day-0 gating (shows "Day 0 — tracking started" instead of 0% return)
-- Risk-adjusted metrics row: Sharpe, Sortino, Calmar ratios with volatility/drawdown captions
+- Risk-adjusted metrics: 7 cards in 2 rows — Sharpe, Sortino, Calmar / Max DD, Volatility, Win Rate, Profit Factor
+- "ℹ️ What do these metrics mean?" expander (collapsed, uses `_METRIC_GLOSSARY`)
 - Performance chart with Absolute ($) / Percentage (%) toggle
 - Per-portfolio holdings table with Excel + JSON export buttons
 - Transaction ledger as collapsed diagnostic expander (not a main workflow step)
 
 **Tab 4 Report features:**
-- Metrics comparison table with Sharpe, Sortino, Calmar, Win Rate, Profit Factor columns
-- 7 Plotly charts (consistent model→color mapping across all): return comparison bar, risk ratios grouped bar, vol-vs-drawdown scatter, portfolio composition pies, drawdown timeline, rolling Sharpe (30-day), daily return distribution
+- Metrics comparison table with Volatility, Sharpe, Sortino, Calmar, Win Rate, Profit Factor columns
+- "ℹ️ What do these metrics mean?" expander (collapsed, uses `_METRIC_GLOSSARY`)
+- 7 Plotly charts (consistent model→color mapping via `color_map`/`legend_map` across all):
+  1. Return comparison bar (Total / Annualized / Net)
+  2. Risk-adjusted ratios grouped bar (Sharpe / Sortino / Calmar)
+  3. Volatility vs Max Drawdown scatter
+  4. Portfolio composition donut pies
+  5. Drawdown timeline
+  6. Rolling Sharpe (30-day window)
+  7. Daily return distribution histograms
 - Downloadable Markdown + Excel reports
 
 ---
 
-### `strategy_generator.py` — LLM Integration (~360 lines)
+### `strategy_generator.py` — LLM Integration (~510 lines)
 
-3 providers: Anthropic (Opus/Sonnet), xAI (Grok 3/Mini), Ollama (local, configurable timeout up to 900s).
+4 providers: Anthropic (Opus/Sonnet), xAI (Grok 3/Mini), Google (Gemini 2.0 Flash/1.5 Pro), Ollama (local, configurable timeout up to 900s).
+
+- Gemini uses REST API directly (`generativelanguage.googleapis.com`) — no SDK dependency
+- `responseMimeType: "application/json"` ensures structured JSON output from Gemini
+- Each provider has its own pricing table for cost estimation
+- Unified `generate_strategies()` dispatcher routes to the correct provider function
 
 ---
 
@@ -91,7 +109,7 @@ Wraps `yfinance` with MultiIndex compatibility. Live prices, historical series, 
 
 ---
 
-### `report_generator.py` — Report Engine (~900 lines)
+### `report_generator.py` — Report Engine (~920 lines)
 
 **`compute_metrics()`** returns 27+ stats including:
 - Return: total (% and $), annualized, net-of-AI-cost
@@ -100,8 +118,9 @@ Wraps `yfinance` with MultiIndex compatibility. Live prices, historical series, 
 - Consistency: **win rate** (% positive days), **profit factor** (gains ÷ losses)
 - Position analysis: best/worst holding returns, cash remaining, % invested
 - AI cost: tokens used, estimated cost USD
+- Pre-computes `clean_daily_returns` once (reused by volatility, Sortino, win rate, profit factor)
 
-**`generate_markdown_report()`** — comparative markdown with metrics table (includes Sortino/Calmar), per-model detail sections, AI-generated narrative
+**`generate_markdown_report()`** — comparative markdown with metrics table (includes Sortino/Calmar/Win Rate/Profit Factor), per-model detail sections, AI-generated narrative
 
 **`generate_excel_report()`** — multi-sheet .xlsx with styled metrics, per-model holding sheets
 
@@ -130,3 +149,6 @@ Multi-file uploader supports importing several portfolios simultaneously. Each f
 - **Transaction ledger** — diagnostic expander inside Dashboard (not a main workflow step)
 - **Day-0 gating** — same-day executions show position snapshot; performance charts/metrics gated behind elapsed time
 - **AI cost is estimated** — static pricing tables, not billed; Ollama = $0
+- **Gemini via REST** — no `google-generativeai` SDK; `requests` already in dependency list
+- **Ollama graceful fallback** — auto-disabled on Streamlit Cloud; silently removed from dropdown, code remains for local use
+- **Shared metric glossary** — `_METRIC_GLOSSARY` constant ensures Guide, Dashboard, and Report always show identical definitions

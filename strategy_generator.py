@@ -2,7 +2,8 @@
 strategy_generator.py
 =====================
 Multi-model strategy generation engine.
-Supports Anthropic, xAI (Grok), and local Ollama models via a unified interface.
+Supports Anthropic, xAI (Grok), Google Gemini, and local Ollama models
+via a unified interface.
 
 The key idea: the SAME thesis goes to up to 3 different models independently,
 so the user can compare how model selection affects strategy implementation.
@@ -10,6 +11,7 @@ so the user can compare how model selection affects strategy implementation.
 Supported providers:
   - Anthropic: Claude Opus 4, Claude Sonnet 4
   - xAI:       Grok 3, Grok 3 Mini
+  - Google:    Gemini 2.0 Flash, Gemini 1.5 Pro
   - Ollama:    any model running locally (llama3, mistral, mixtral, etc.)
 """
 
@@ -72,8 +74,13 @@ XAI_MODELS = {
     "Grok 3 Mini": "grok-3-mini-latest",
 }
 
+GEMINI_MODELS = {
+    "Gemini 2.0 Flash": "gemini-2.0-flash",
+    "Gemini 1.5 Pro": "gemini-1.5-pro",
+}
+
 # ── Pricing ($ per 1M tokens) — used for cost estimation ──────────────────────
-# Sources: Anthropic & xAI pricing pages. Update these if pricing changes.
+# Sources: Anthropic, xAI, & Google pricing pages. Update these if pricing changes.
 ANTHROPIC_PRICING = {
     "claude-opus-4-20250514":   {"input": 15.00, "output": 75.00},
     "claude-sonnet-4-20250514": {"input":  3.00, "output": 15.00},
@@ -82,6 +89,11 @@ ANTHROPIC_PRICING = {
 XAI_PRICING = {
     "grok-3-latest":      {"input": 3.00, "output": 15.00},
     "grok-3-mini-latest": {"input": 0.30, "output":  0.50},
+}
+
+GEMINI_PRICING = {
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "gemini-1.5-pro":   {"input": 1.25, "output": 5.00},
 }
 # Ollama models run locally — $0 API cost, but we still track tokens for reference
 
@@ -338,6 +350,87 @@ def generate_strategies_xai(thesis: str, api_key: str,
     return _parse_strategy_json(raw_text), usage
 
 
+# ── Provider: Google Gemini ──────────────────────────────────────────────────
+
+def generate_strategies_gemini(thesis: str, api_key: str,
+                               model: str = "gemini-2.0-flash") -> tuple:
+    """
+    Generate strategies via the Google Gemini REST API.
+    Uses the generateContent endpoint directly (no SDK dependency).
+
+    Returns:
+        (strategies_dict, usage_dict) tuple.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": (
+                            f"{STRATEGY_SYSTEM_PROMPT}\n\n"
+                            f"Here is my investment thesis:\n\n{thesis}\n\n"
+                            "Please generate 3-4 actionable investment strategies ranked by risk level. "
+                            "Respond ONLY with valid JSON, no other text."
+                        )
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 4096,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=120)
+        resp.raise_for_status()
+    except requests.ConnectionError:
+        raise ConnectionError("Cannot reach the Google Gemini API. Check your internet connection.")
+    except requests.HTTPError as e:
+        try:
+            err_detail = resp.json().get("error", {}).get("message", str(e))
+        except Exception:
+            err_detail = str(e)
+        raise ValueError(f"Gemini API error: {err_detail}")
+
+    data = resp.json()
+
+    # Extract text from Gemini response structure
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise ValueError(f"Empty response from Gemini model '{model}'.")
+    raw_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    if not raw_text:
+        raise ValueError(f"No text content in Gemini response for model '{model}'.")
+
+    # Extract token usage from Gemini metadata
+    usage_meta = data.get("usageMetadata", {})
+    input_tokens = usage_meta.get("promptTokenCount", 0)
+    output_tokens = usage_meta.get("candidatesTokenCount", 0)
+
+    # Calculate estimated cost
+    pricing = GEMINI_PRICING.get(model, {"input": 0, "output": 0})
+    cost = (
+        (input_tokens / 1_000_000) * pricing["input"]
+        + (output_tokens / 1_000_000) * pricing["output"]
+    )
+
+    usage = {
+        "provider": "google",
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "estimated_cost_usd": round(cost, 6),
+    }
+
+    return _parse_strategy_json(raw_text), usage
+
+
 # ── Unified interface ─────────────────────────────────────────────────────────
 
 def generate_strategies(thesis: str, provider: str, model_name: str,
@@ -349,10 +442,10 @@ def generate_strategies(thesis: str, provider: str, model_name: str,
 
     Args:
         thesis:         User's investment narrative.
-        provider:       "anthropic", "xai", or "ollama".
-        model_name:     Display name (Anthropic/xAI) or model string (Ollama).
-        api_key:        API key for Anthropic or xAI (ignored for Ollama).
-        ollama_url:     Ollama server URL (ignored for Anthropic/xAI).
+        provider:       "anthropic", "xai", "google", or "ollama".
+        model_name:     Display name (Anthropic/xAI/Google) or model string (Ollama).
+        api_key:        API key for Anthropic, xAI, or Google (ignored for Ollama).
+        ollama_url:     Ollama server URL (ignored for cloud providers).
         ollama_timeout: Request timeout in seconds for Ollama calls.
 
     Returns:
@@ -366,6 +459,9 @@ def generate_strategies(thesis: str, provider: str, model_name: str,
     elif provider == "xai":
         model_id = XAI_MODELS.get(model_name, model_name)
         return generate_strategies_xai(thesis, api_key, model_id)
+    elif provider == "google":
+        model_id = GEMINI_MODELS.get(model_name, model_name)
+        return generate_strategies_gemini(thesis, api_key, model_id)
     elif provider == "ollama":
         return generate_strategies_ollama(thesis, model_name, ollama_url, timeout=ollama_timeout)
     else:

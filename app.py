@@ -2,7 +2,7 @@
 app.py — Zetetic (v2)
 =========================================
 Streamlit application with:
-  1. Multi-model strategy generation (Anthropic Opus/Sonnet + Ollama)
+  1. Multi-model strategy generation (Anthropic / xAI / Google Gemini / Ollama)
   2. Backtesting with custom start dates using historical prices
   3. Internal transaction tracking system (per-model portfolios)
   4. Multi-step reset confirmation dialogs
@@ -27,6 +27,7 @@ from strategy_generator import (
     strategies_to_trades,
     ANTHROPIC_MODELS,
     XAI_MODELS,
+    GEMINI_MODELS,
     get_available_ollama_models,
     _empty_usage,
 )
@@ -335,6 +336,7 @@ st.markdown("""
     .model-opus { border-left: 4px solid #8B5CF6; }
     .model-sonnet { border-left: 4px solid #3B82F6; }
     .model-ollama { border-left: 4px solid #10B981; }
+    .model-gemini { border-left: 4px solid #EA4335; }
     div[data-testid="stExpander"] { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 8px; }
     .reset-warning { background-color: #FEF2F2; border: 2px solid #EF4444;
                      border-radius: 8px; padding: 16px; margin: 8px 0; }
@@ -378,13 +380,25 @@ with st.sidebar:
 
     num_models = st.slider("Number of models to test", min_value=1, max_value=3, value=1)
 
-    # Provider options
-    PROVIDERS = ["Anthropic", "xAI (Grok)", "Ollama (Local)"]
+    # ── Detect cloud deployment (Ollama unavailable) ──────────────────────
+    # Streamlit Cloud sets HOSTNAME or runs from /mount; also no local Ollama
+    _is_cloud = os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("HOSTNAME", "").startswith("streamlit")
+    if not _is_cloud:
+        # Final check: probe Ollama to see if it's actually reachable
+        _ollama_reachable = len(get_available_ollama_models()) > 0
+    else:
+        _ollama_reachable = False
+
+    # Provider options — Ollama only if locally reachable
+    PROVIDERS = ["Anthropic", "xAI (Grok)", "Google (Gemini)"]
+    if _ollama_reachable:
+        PROVIDERS.append("Ollama (Local)")
 
     # Per-provider display → internal key mapping
     _PROVIDER_KEY = {
         "Anthropic": "anthropic",
         "xAI (Grok)": "xai",
+        "Google (Gemini)": "google",
         "Ollama (Local)": "ollama",
     }
 
@@ -451,7 +465,26 @@ with st.sidebar:
             )
             active_models.append(("xai", model_name))
 
-        # ── Ollama slot ────────────────────────────────────────────────
+        # ── Google Gemini slot ─────────────────────────────────────────
+        elif provider_key == "google":
+            if "google" not in api_keys:
+                api_keys["google"] = st.text_input(
+                    "Google AI API Key",
+                    type="password",
+                    help="Get a free key at aistudio.google.com/apikey",
+                    key="google_api_key",
+                )
+            else:
+                st.caption("_Using Google key from above_")
+
+            model_name = st.selectbox(
+                "Model",
+                options=list(GEMINI_MODELS.keys()),
+                key=f"google_model_{slot}",
+            )
+            active_models.append(("google", model_name))
+
+        # ── Ollama slot (only shown when locally available) ────────────
         elif provider_key == "ollama":
             # Show URL + timeout inputs once, share across Ollama slots
             if _ollama_models_cache is None:
@@ -675,7 +708,7 @@ with st.sidebar:
 
         st.divider()
 
-    st.caption("Built with Streamlit • Anthropic • xAI • Ollama • Yahoo Finance")
+    st.caption("Built with Streamlit • Anthropic • xAI • Google • Ollama • Yahoo Finance")
 
 ## TWAS HERE ##
 
@@ -738,7 +771,7 @@ Before generating strategies, configure these settings in the **sidebar** (left 
 | Setting | What to do |
 |---------|-----------|
 | **Number of models** | Choose 1–3 models to compare side by side |
-| **Provider per slot** | Pick **Anthropic** (Claude), **xAI** (Grok), or **Ollama** (local) for each slot |
+| **Provider per slot** | Pick **Anthropic** (Claude), **xAI** (Grok), **Google** (Gemini), or **Ollama** (local, if available) for each slot |
 | **API Keys** | Enter your Anthropic key ([console.anthropic.com](https://console.anthropic.com)) and/or xAI key ([console.x.ai](https://console.x.ai)) — only shown when you select that provider |
 | **Starting Capital** | Set how much hypothetical money to invest ($1K–$1M) |
 | **Benchmark** | Pick an index to compare against (S&P 500 is the default) |
