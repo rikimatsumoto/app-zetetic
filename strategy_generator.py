@@ -130,29 +130,58 @@ def _clean_json_text(text: str) -> str:
     Fix common LLM JSON quirks that break json.loads():
       - Trailing commas before } or ]  (e.g.  "a": 1,} )
       - Single-line // comments
-      - Unescaped control characters inside strings
+      - Unescaped control characters outside strings
+      - Literal newlines / tabs INSIDE JSON string values (common in Gemini 2.5)
     """
     import re
 
-    # 1. Remove single-line // comments (but not inside strings — rough heuristic)
+    # 1. Remove single-line // comments (rough heuristic — not inside strings)
     text = re.sub(r'(?m)^\s*//.*$', '', text)          # full-line comments
     text = re.sub(r',\s*//[^\n]*', ',', text)           # trailing comments after values
 
     # 2. Remove trailing commas before } or ]
-    #    Matches: comma, optional whitespace/newlines, then } or ]
     text = re.sub(r',\s*([}\]])', r'\1', text)
 
-    # 3. Strip control characters that sneak into LLM output (except \n, \r, \t)
+    # 3. Strip control characters outside of strings (except \n, \r, \t)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
 
-    return text
+    # 4. Fix literal newlines / tabs INSIDE JSON string values.
+    #    Walk character-by-character tracking in-string state.
+    #    When we hit a raw newline/tab inside a quoted string, escape it.
+    result = []
+    in_string = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        # Toggle in_string on unescaped quote
+        if ch == '"' and (i == 0 or text[i - 1] != '\\'):
+            in_string = not in_string
+            result.append(ch)
+        elif in_string and ch == '\n':
+            result.append('\\n')
+        elif in_string and ch == '\r':
+            result.append('\\r')
+        elif in_string and ch == '\t':
+            result.append('\\t')
+        else:
+            result.append(ch)
+        i += 1
+
+    return ''.join(result)
 
 
 def _parse_strategy_json(raw_text: str) -> dict:
     """
     Robustly parse LLM output into strategy JSON.
-    Handles markdown fencing, extra whitespace, preamble text,
-    trailing commas, comments, and other common LLM JSON quirks.
+
+    Parse pipeline (tries each step, stops on first success):
+      1. Strict json.loads
+      2. json.loads with strict=False  (allows control chars in strings)
+      3. Full text cleanup  (_clean_json_text) + strict=False
+
+    Handles markdown fencing, preamble text, trailing commas, comments,
+    unescaped newlines inside strings, and other common LLM quirks —
+    especially from Gemini 2.5 Flash (a thinking model).
     """
     text = raw_text.strip()
 
@@ -171,19 +200,23 @@ def _parse_strategy_json(raw_text: str) -> dict:
     if first_brace != -1 and last_brace != -1:
         text = text[first_brace:last_brace + 1]
 
-    # First attempt: strict parse
+    # Attempt 1: strict parse (fast path for well-formed JSON)
     try:
         strategies = json.loads(text)
     except json.JSONDecodeError:
-        # Second attempt: clean up common LLM quirks and retry
-        cleaned = _clean_json_text(text)
+        # Attempt 2: allow control characters inside strings
         try:
-            strategies = json.loads(cleaned)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Failed to parse strategy JSON.\nError: {e}\n"
-                f"Cleaned text (first 500 chars): {cleaned[:500]}"
-            )
+            strategies = json.loads(text, strict=False)
+        except json.JSONDecodeError:
+            # Attempt 3: full cleanup (trailing commas, comments, newline escaping)
+            cleaned = _clean_json_text(text)
+            try:
+                strategies = json.loads(cleaned, strict=False)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Failed to parse strategy JSON.\nError: {e}\n"
+                    f"Cleaned text (first 500 chars): {cleaned[:500]}"
+                )
 
     if "strategies" not in strategies:
         raise ValueError("Response missing 'strategies' key.")
@@ -393,6 +426,46 @@ def generate_strategies_gemini(thesis: str, api_key: str,
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
+
+    # Define the exact schema we expect — Gemini validates output against this
+    # before returning, preventing malformed JSON at the source.
+    response_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "thesis_summary": {"type": "STRING"},
+            "strategies": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "name": {"type": "STRING"},
+                        "risk_level": {"type": "STRING"},
+                        "risk_score": {"type": "INTEGER"},
+                        "rationale": {"type": "STRING"},
+                        "allocations": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "ticker": {"type": "STRING"},
+                                    "name": {"type": "STRING"},
+                                    "weight": {"type": "NUMBER"},
+                                    "rationale": {"type": "STRING"},
+                                },
+                                "required": ["ticker", "name", "weight", "rationale"],
+                            },
+                        },
+                        "rebalancing_notes": {"type": "STRING"},
+                        "time_horizon": {"type": "STRING"},
+                    },
+                    "required": ["name", "risk_level", "risk_score", "rationale",
+                                 "allocations", "rebalancing_notes", "time_horizon"],
+                },
+            },
+        },
+        "required": ["thesis_summary", "strategies"],
+    }
+
     payload = {
         "contents": [
             {
@@ -410,8 +483,9 @@ def generate_strategies_gemini(thesis: str, api_key: str,
         ],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": 8192,
             "responseMimeType": "application/json",
+            "responseSchema": response_schema,
         },
     }
 
