@@ -11,8 +11,8 @@ so the user can compare how model selection affects strategy implementation.
 Supported providers:
   - Anthropic: Claude Opus 4, Claude Sonnet 4
   - xAI:       Grok 3, Grok 3 Mini
-  - Google:    Gemini 2.0 Flash, Gemini 1.5 Pro
-  - Ollama:    any model running locally (llama3, mistral, mixtral, etc.)
+  - Google:    Gemini 2.5 Flash, Gemini 1.5 Pro
+  - Ollama:    any model running locally (llama3, qwen, mistral, etc.)
 """
 
 import json
@@ -75,7 +75,7 @@ XAI_MODELS = {
 }
 
 GEMINI_MODELS = {
-    "Gemini 2.0 Flash": "gemini-2.0-flash",
+    "Gemini 2.5 Flash": "gemini-2.5-flash",
     "Gemini 1.5 Pro": "gemini-1.5-pro",
 }
 
@@ -92,7 +92,7 @@ XAI_PRICING = {
 }
 
 GEMINI_PRICING = {
-    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
     "gemini-1.5-pro":   {"input": 1.25, "output": 5.00},
 }
 # Ollama models run locally — $0 API cost, but we still track tokens for reference
@@ -125,10 +125,34 @@ def get_available_ollama_models(ollama_url: str = "http://localhost:11434") -> l
     return []
 
 
+def _clean_json_text(text: str) -> str:
+    """
+    Fix common LLM JSON quirks that break json.loads():
+      - Trailing commas before } or ]  (e.g.  "a": 1,} )
+      - Single-line // comments
+      - Unescaped control characters inside strings
+    """
+    import re
+
+    # 1. Remove single-line // comments (but not inside strings — rough heuristic)
+    text = re.sub(r'(?m)^\s*//.*$', '', text)          # full-line comments
+    text = re.sub(r',\s*//[^\n]*', ',', text)           # trailing comments after values
+
+    # 2. Remove trailing commas before } or ]
+    #    Matches: comma, optional whitespace/newlines, then } or ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+
+    # 3. Strip control characters that sneak into LLM output (except \n, \r, \t)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+    return text
+
+
 def _parse_strategy_json(raw_text: str) -> dict:
     """
     Robustly parse LLM output into strategy JSON.
-    Handles markdown fencing, extra whitespace, preamble text, etc.
+    Handles markdown fencing, extra whitespace, preamble text,
+    trailing commas, comments, and other common LLM JSON quirks.
     """
     text = raw_text.strip()
 
@@ -147,13 +171,19 @@ def _parse_strategy_json(raw_text: str) -> dict:
     if first_brace != -1 and last_brace != -1:
         text = text[first_brace:last_brace + 1]
 
+    # First attempt: strict parse
     try:
         strategies = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Failed to parse strategy JSON.\nError: {e}\n"
-            f"Cleaned text (first 500 chars): {text[:500]}"
-        )
+    except json.JSONDecodeError:
+        # Second attempt: clean up common LLM quirks and retry
+        cleaned = _clean_json_text(text)
+        try:
+            strategies = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Failed to parse strategy JSON.\nError: {e}\n"
+                f"Cleaned text (first 500 chars): {cleaned[:500]}"
+            )
 
     if "strategies" not in strategies:
         raise ValueError("Response missing 'strategies' key.")
@@ -353,7 +383,7 @@ def generate_strategies_xai(thesis: str, api_key: str,
 # ── Provider: Google Gemini ──────────────────────────────────────────────────
 
 def generate_strategies_gemini(thesis: str, api_key: str,
-                               model: str = "gemini-2.0-flash") -> tuple:
+                               model: str = "gemini-2.5-flash") -> tuple:
     """
     Generate strategies via the Google Gemini REST API.
     Uses the generateContent endpoint directly (no SDK dependency).

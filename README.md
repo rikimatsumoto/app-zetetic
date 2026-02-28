@@ -27,7 +27,7 @@ User Thesis ──┬──▶ Claude Opus 4    ──▶ Strategy A ──▶ E
               │   ┌─ Tokens: 2,103 ─ Cost: $0.0351 ──┐        │
               ├──▶ Claude Sonnet 4  ──▶ Strategy B ──▶ Execute ─┤──▶ Compare vs Benchmark
               │   ┌─ Tokens: 1,800 ─ Cost: $0.0009 ──┐        │         ▼
-              ├──▶ Gemini 2.0 Flash ──▶ Strategy C ──▶ Execute ─┤   Performance Report
+              ├──▶ Gemini 2.5 Flash ──▶ Strategy C ──▶ Execute ─┤   Performance Report
               │   ┌─ Tokens: 1,950 ─ Cost: $0 (local) ┐       │   (Markdown + Excel)
               └──▶ Ollama (local)   ──▶ Strategy D ──▶ Execute ─┘   Net returns after AI cost
 ```
@@ -180,7 +180,7 @@ The app tracks token usage and estimates costs at every level:
 | Claude Sonnet 4 | $3.00 | $15.00 |
 | Grok 3 | $3.00 | $15.00 |
 | Grok 3 Mini | $0.30 | $0.50 |
-| Gemini 2.0 Flash | $0.10 | $0.40 |
+| Gemini 2.5 Flash | $0.10 | $0.40 |
 | Gemini 1.5 Pro | $1.25 | $5.00 |
 | Ollama (any) | $0 (local) | $0 (local) |
 
