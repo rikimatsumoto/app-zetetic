@@ -13,7 +13,6 @@ Run with:  streamlit run app.py
 
 import os
 import re
-import glob
 import json
 import streamlit as st
 import numpy as np
@@ -321,6 +320,80 @@ _METRIC_GLOSSARY = """
 """
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EXECUTION HELPER — shared by per-strategy and "Execute All" buttons
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _execute_strategy(model_label: str, strategy: dict, execution_date: str,
+                      initial_capital: float) -> dict:
+    """
+    Execute a single strategy: fetch prices, create portfolio, record trades.
+
+    Args:
+        model_label:     Display name of the model that generated this strategy.
+        strategy:        Strategy dict with 'name', 'allocations', etc.
+        execution_date:  Date string (YYYY-MM-DD) — today for live, past for backtest.
+        initial_capital: Dollar amount to invest.
+
+    Returns:
+        dict with keys: 'exec_key', 'ok_count', 'failed', 'missing', 'portfolio'
+    """
+    exec_key = f"{model_label}__{strategy['name']}"
+    tickers = [a["ticker"].upper() for a in strategy["allocations"]]
+
+    # Fetch prices: historical if backtest date is in the past, live if today
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if execution_date < today_str:
+        prices = get_prices_at_date(tickers, execution_date)
+    else:
+        prices = get_current_prices(tickers)
+
+    prices = {k: v for k, v in prices.items() if v is not None}
+    missing = [t for t in tickers if t not in prices]
+
+    trades = strategies_to_trades(strategy, initial_capital, prices)
+
+    portfolio = init_portfolio(
+        model_label=model_label,
+        provider=st.session_state.get("model_providers", {}).get(model_label, "unknown"),
+        initial_capital=initial_capital,
+        start_date=execution_date,
+        strategy_name=strategy["name"],
+        strategy_data=strategy,
+    )
+
+    failed_buys = []
+    for t in trades:
+        if t.get("error") or t["shares"] == 0:
+            continue
+        result = record_buy(
+            portfolio, t["ticker"], t["shares"], t["price"],
+            notes=f"Initial: {t.get('rationale', '')}",
+        )
+        if isinstance(result, dict) and "error" in result:
+            failed_buys.append(f"{t['ticker']}: {result['error']}")
+
+    # Store in session state
+    st.session_state["portfolios"][exec_key] = portfolio
+    st.session_state["trades_executed"][exec_key] = True
+    st.session_state["report_generated"] = False
+
+    # Attach AI usage data to the portfolio
+    usage = st.session_state.get("model_usages", {}).get(model_label, {})
+    if usage:
+        record_ai_usage(portfolio, usage)
+
+    ok_count = sum(1 for t in trades if not t.get("error") and t["shares"] > 0)
+
+    return {
+        "exec_key": exec_key,
+        "ok_count": ok_count,
+        "failed": failed_buys,
+        "missing": missing,
+        "portfolio": portfolio,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG & CSS
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
@@ -358,6 +431,7 @@ DEFAULTS = {
     "thesis_text": "",
     "reset_step": 0,           # 0=none, 1=first confirm, 2=final confirm
     "report_generated": False,
+    "execution_date": "",       # YYYY-MM-DD — set in Tab 2 (empty = today)
     "_import_file_ids": [],          # list of processed file identity strings
     "_import_file_to_keys": {},      # {file_id: [exec_key, ...]} for removal tracking
 }
@@ -543,24 +617,6 @@ with st.sidebar:
         }.get(x, x),
     )
 
-    # ── Backtest Date ──────────────────────────────────────────────────────
-    st.subheader("📅 Execution Date")
-    use_backtest = st.checkbox("Backtest (use historical date)", value=False)
-
-    if use_backtest:
-        backtest_date = st.date_input(
-            "Start Date",
-            value=datetime.now() - timedelta(days=180),
-            min_value=datetime(2024, 1, 1),
-            max_value=datetime.now() - timedelta(days=1),
-            help="Strategy will be executed using closing prices on this date.",
-        )
-        execution_date = backtest_date.strftime("%Y-%m-%d")
-    else:
-        execution_date = datetime.now().strftime("%Y-%m-%d")
-
-    st.caption(f"Execution date: **{execution_date}**")
-
     st.divider()
 
     # ── Reset (multi-step confirmation) ────────────────────────────────────
@@ -590,6 +646,14 @@ with st.sidebar:
             if st.button("Cancel", use_container_width=True):
                 st.session_state["reset_step"] = 0
                 st.rerun()
+
+    elif reset_step == 2:
+        # Final step: actually perform the reset
+        clear_all_portfolios(st.session_state)
+        st.session_state["reset_step"] = 0
+        st.session_state["execution_date"] = ""
+        st.toast("All data has been reset.", icon="🗑️")
+        st.rerun()
 
     st.divider()
 
@@ -710,7 +774,6 @@ with st.sidebar:
 
     st.caption("Built with Streamlit • Anthropic • xAI • Google • Ollama • Yahoo Finance")
 
-## TWAS HERE ##
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN AREA
@@ -721,6 +784,14 @@ st.markdown("*Multi-model strategy comparison with backtesting & performance ana
 tab_guide, tab_thesis, tab_strategies, tab_dashboard, tab_report = st.tabs([
     "📖 Guide", "1️⃣ Thesis", "2️⃣ Strategies", "3️⃣ Dashboard", "4️⃣ Report"
 ])
+
+# Global execution_date — set by Tab 2 controls, read by Dashboard + Report.
+# Falls back to today on first load (before user visits Tab 2).
+execution_date = (
+    st.session_state["execution_date"]
+    if st.session_state["execution_date"]
+    else datetime.now().strftime("%Y-%m-%d")
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -775,7 +846,7 @@ Before generating strategies, configure these settings in the **sidebar** (left 
 | **API Keys** | Enter your Anthropic key ([console.anthropic.com](https://console.anthropic.com)) and/or xAI key ([console.x.ai](https://console.x.ai)) — only shown when you select that provider |
 | **Starting Capital** | Set how much hypothetical money to invest ($1K–$1M) |
 | **Benchmark** | Pick an index to compare against (S&P 500 is the default) |
-| **Backtest Date** | Optional — toggle on to simulate investing on a past date and see how it would have performed |
+| **Backtest Date** | Set in the **Strategies** tab — choose "Historical date" to simulate investing on a past date and see how it would have performed |
 """)
 
     st.divider()
@@ -820,8 +891,8 @@ Each strategy is tagged with a risk level:
 
     with st.expander("What is backtesting?", expanded=False):
         st.markdown(
-            "Backtesting lets you ask \"what if I had invested on a past date?\" Toggle "
-            "**Backtest** in the sidebar, pick a historical start date, and execute a strategy. "
+            "Backtesting lets you ask \"what if I had invested on a past date?\" In the "
+            "**Strategies** tab, switch to \"Historical date\", pick a start date, and execute. "
             "The app will use that date's real closing prices for your initial trades, then "
             "show how the portfolio would have performed from then until today."
         )
@@ -898,8 +969,8 @@ with tab_thesis:
             # Validate API keys for each provider that's in use
             missing_keys = []
             for provider, _ in active_models:
-                if provider in ("anthropic", "xai") and not api_keys.get(provider, ""):
-                    label = "Anthropic" if provider == "anthropic" else "xAI"
+                if provider in ("anthropic", "xai", "google") and not api_keys.get(provider, ""):
+                    label = {"anthropic": "Anthropic", "xai": "xAI", "google": "Google"}.get(provider, provider)
                     if label not in missing_keys:
                         missing_keys.append(label)
             if missing_keys:
@@ -982,11 +1053,136 @@ with tab_strategies:
         if not valid_models:
             st.error("No models returned valid strategies. Try regenerating.")
         else:
+            # ── Execution date picker (top of tab) ────────────────────────
+            st.subheader("📅 Execution Date")
+            date_col1, date_col2 = st.columns([1, 2])
+            with date_col1:
+                date_mode = st.radio(
+                    "When to invest?",
+                    options=["Today (live prices)", "Historical date (backtest)"],
+                    key="date_mode",
+                    horizontal=True,
+                )
+            use_backtest = date_mode.startswith("Historical")
+
+            with date_col2:
+                if use_backtest:
+                    backtest_date = st.date_input(
+                        "Backtest start date",
+                        value=datetime.now() - timedelta(days=180),
+                        min_value=datetime(2024, 1, 1),
+                        max_value=datetime.now() - timedelta(days=1),
+                        help="Strategy will be executed using closing prices on this date.",
+                        key="backtest_date_input",
+                    )
+                    execution_date = backtest_date.strftime("%Y-%m-%d")
+                else:
+                    execution_date = datetime.now().strftime("%Y-%m-%d")
+                    st.caption(f"Using today's prices — **{execution_date}**")
+
+            # Persist for downstream tabs (Dashboard, Report)
+            st.session_state["execution_date"] = execution_date
+
+            # If user changed the date after executing, offer to clear executions only
+            # (preserves LLM-generated strategies — no re-generation / token cost)
+            existing_dates = {
+                p["start_date"]
+                for p in st.session_state.get("portfolios", {}).values()
+            }
+            if existing_dates and execution_date not in existing_dates:
+                st.warning(
+                    f"⚠️ You have portfolios executed on **{', '.join(sorted(existing_dates))}** "
+                    f"but the current date is **{execution_date}**."
+                )
+                if st.button(
+                    "🔄 Clear executions & re-execute on new date",
+                    help="Clears all executed portfolios but keeps your AI-generated strategies. "
+                         "No new tokens will be spent — you can re-execute immediately.",
+                    key="reset_executions_btn",
+                ):
+                    # Clear only execution state — preserve strategies + thesis
+                    st.session_state["portfolios"] = {}
+                    st.session_state["trades_executed"] = {}
+                    st.session_state["report_generated"] = False
+                    # Also clear import tracking (imports were executed on old date)
+                    st.session_state["_import_file_ids"] = []
+                    st.session_state["_import_file_to_keys"] = {}
+                    st.toast("Executions cleared — strategies preserved. Ready to re-execute!", icon="✅")
+                    st.rerun()
+
+            st.divider()
+
+            # ── Collect all unexecuted strategies for "Execute All" ────────
+            all_pending = []    # [(model_label, strategy, idx), ...]
+            for model_label, result in valid_models.items():
+                for idx, strategy in enumerate(result.get("strategies", [])):
+                    exec_key = f"{model_label}__{strategy['name']}"
+                    if exec_key not in st.session_state.get("trades_executed", {}):
+                        all_pending.append((model_label, strategy, idx))
+
+            # ── "Execute All" button ──────────────────────────────────────
+            if all_pending:
+                total_strats = sum(
+                    len(r.get("strategies", []))
+                    for r in valid_models.values()
+                )
+                executed_count = total_strats - len(all_pending)
+                st.caption(
+                    f"**{executed_count}** of **{total_strats}** strategies executed · "
+                    f"**{len(all_pending)}** remaining"
+                )
+
+                if st.button(
+                    f"🚀 Execute All Remaining ({len(all_pending)} strategies)",
+                    type="primary",
+                    use_container_width=True,
+                    key="exec_all_btn",
+                ):
+                    progress = st.progress(0, text="Executing strategies...")
+                    results_summary = []
+
+                    for i, (ml, strat, _idx) in enumerate(all_pending):
+                        progress.progress(
+                            i / len(all_pending),
+                            text=f"Executing {ml} — {strat['name']}...",
+                        )
+                        try:
+                            res = _execute_strategy(
+                                ml, strat, execution_date, initial_capital,
+                            )
+                            results_summary.append(
+                                f"✅ **{ml}** — {strat['name']}: "
+                                f"{res['ok_count']} trades"
+                            )
+                            if res["missing"]:
+                                results_summary.append(
+                                    f"   ⚠️ No price data: {', '.join(res['missing'])}"
+                                )
+                            if res["failed"]:
+                                results_summary.append(
+                                    f"   ⚠️ Failed: {'; '.join(res['failed'])}"
+                                )
+                        except Exception as e:
+                            results_summary.append(
+                                f"❌ **{ml}** — {strat['name']}: {e}"
+                            )
+
+                    progress.progress(1.0, text="Done!")
+                    for line in results_summary:
+                        st.markdown(line)
+                    st.rerun()
+            else:
+                st.success("✅ All strategies have been executed.")
+
+            st.divider()
+
+            # ── Per-model strategy cards ──────────────────────────────────
             for model_label, result in valid_models.items():
                 provider = st.session_state.get("model_providers", {}).get(model_label, "")
                 color = {
                     "anthropic": "#8B5CF6",  # Purple for Claude
                     "xai": "#E44332",        # Red for Grok
+                    "google": "#EA4335",     # Google red for Gemini
                     "ollama": "#10B981",     # Green for local
                 }.get(provider, "#6B7280")
 
@@ -1041,7 +1237,7 @@ with tab_strategies:
                                           showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
 
-                        # Execute button
+                        # Execute button (individual)
                         exec_key = f"{model_label}__{strategy['name']}"
                         already_executed = exec_key in st.session_state.get("trades_executed", {})
 
@@ -1065,57 +1261,21 @@ with tab_strategies:
                                 use_container_width=True,
                             ):
                                 with st.spinner(f"Fetching prices and executing for {model_label}..."):
-                                    tickers = [a["ticker"].upper() for a in strategy["allocations"]]
-                                    if use_backtest:
-                                        prices = get_prices_at_date(tickers, execution_date)
-                                    else:
-                                        prices = get_current_prices(tickers)
-
-                                    prices = {k: v for k, v in prices.items() if v is not None}
-                                    missing = [t for t in tickers if t not in prices]
-                                    if missing:
-                                        st.warning(f"Skipping (no price data): {', '.join(missing)}")
-
-                                    trades = strategies_to_trades(strategy, initial_capital, prices)
-
-                                    portfolio = init_portfolio(
-                                        model_label=model_label,
-                                        provider=st.session_state.get("model_providers", {}).get(model_label, "unknown"),
-                                        initial_capital=initial_capital,
-                                        start_date=execution_date,
-                                        strategy_name=strategy["name"],
-                                        strategy_data=strategy,
+                                    res = _execute_strategy(
+                                        model_label, strategy,
+                                        execution_date, initial_capital,
                                     )
 
-                                    failed_buys = []
-                                    for t in trades:
-                                        if t.get("error") or t["shares"] == 0:
-                                            continue
-                                        result = record_buy(
-                                            portfolio, t["ticker"], t["shares"], t["price"],
-                                            notes=f"Initial: {t.get('rationale', '')}",
-                                        )
-                                        if isinstance(result, dict) and "error" in result:
-                                            failed_buys.append(f"{t['ticker']}: {result['error']}")
-
-                                    st.session_state["portfolios"][exec_key] = portfolio
-                                    st.session_state["trades_executed"][exec_key] = True
-                                    st.session_state["report_generated"] = False
-
-                                    # Attach AI usage data to the portfolio
-                                    usage = st.session_state.get("model_usages", {}).get(model_label, {})
-                                    if usage:
-                                        record_ai_usage(portfolio, usage)
-
-                                ok_count = sum(1 for t in trades if not t.get('error') and t['shares'] > 0)
+                                if res["missing"]:
+                                    st.warning(f"Skipping (no price data): {', '.join(res['missing'])}")
                                 st.success(
-                                    f"Executed {ok_count} "
-                                    f"trades for {model_label} — {strategy['name']}"
+                                    f"Executed {res['ok_count']} trades "
+                                    f"for {model_label} — {strategy['name']}"
                                 )
-                                if failed_buys:
+                                if res["failed"]:
                                     st.warning(
-                                        f"⚠️ {len(failed_buys)} trade(s) failed: "
-                                        + "; ".join(failed_buys)
+                                        f"⚠️ {len(res['failed'])} trade(s) failed: "
+                                        + "; ".join(res["failed"])
                                     )
                                 st.rerun()
 
@@ -1204,24 +1364,21 @@ with tab_dashboard:
         if any_with_history:
             st.subheader("Risk-Adjusted Metrics")
             history_ports = [(l, p) for l, p in portfolios.items() if has_history[l]]
-            metric_cols = st.columns(min(len(history_ports), 4))
-            for col_idx, (label, port) in enumerate(history_ports):
+
+            # One full-width row per strategy — avoids nested columns truncation
+            for label, port in history_ports:
                 m = compute_metrics(port, current_prices)
-                with metric_cols[col_idx % len(metric_cols)]:
-                    st.markdown(f"**{port['model_label']}**")
+                st.markdown(f"**{port['model_label']}** · {port['strategy_name']}")
 
-                    # Row 1: Risk-adjusted ratios
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Sharpe", f"{m['sharpe_ratio']:.2f}")
-                    c2.metric("Sortino", f"{m['sortino_ratio']:.2f}")
-                    c3.metric("Calmar", f"{m['calmar_ratio']:.2f}")
-
-                    # Row 2: Risk & consistency metrics
-                    r1, r2, r3, r4 = st.columns(4)
-                    r1.metric("Max DD", f"{m['max_drawdown']:.1%}")
-                    r2.metric("Volatility", f"{m['volatility']:.1%}")
-                    r3.metric("Win Rate", f"{m['win_rate']:.0%}")
-                    r4.metric("Profit Factor", f"{m['profit_factor']:.2f}")
+                # All 7 metrics in a single row across the full page width
+                c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+                c1.metric("Sharpe", f"{m['sharpe_ratio']:.2f}")
+                c2.metric("Sortino", f"{m['sortino_ratio']:.2f}")
+                c3.metric("Calmar", f"{m['calmar_ratio']:.2f}")
+                c4.metric("Max DD", f"{m['max_drawdown']:.1%}")
+                c5.metric("Volatility", f"{m['volatility']:.1%}")
+                c6.metric("Win Rate", f"{m['win_rate']:.0%}")
+                c7.metric("Profit Factor", f"{m['profit_factor']:.2f}")
 
             # Collapsed glossary for metric explanations
             with st.expander("ℹ️ What do these metrics mean?", expanded=False):
