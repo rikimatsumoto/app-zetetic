@@ -28,6 +28,7 @@ from strategy_generator import (
     XAI_MODELS,
     GEMINI_MODELS,
     get_available_ollama_models,
+    get_available_ollama_cloud_models,
     _empty_usage,
 )
 from transaction_store import (
@@ -393,11 +394,47 @@ def _execute_strategy(model_label: str, strategy: dict, execution_date: str,
     }
 
 
+# ── Chart styling constants (shared by Dashboard + Report) ────────────────────
+
+# 10-color palette from Plotly's qualitative set — enough for 3 models × 5 strategies
+# Each strategy gets a unique color; no duplicates up to 10 portfolios.
+_PALETTE = [
+    "#636EFA",  # blue
+    "#EF553B",  # red
+    "#00CC96",  # green
+    "#AB63FA",  # purple
+    "#FFA15A",  # orange
+    "#19D3F3",  # cyan
+    "#FF6692",  # pink
+    "#B6E880",  # lime
+    "#FF97FF",  # magenta
+    "#FECB52",  # yellow
+]
+
+# Dash patterns cycle alongside colors so even with >10 strategies,
+# lines remain distinguishable (10 colors × 4 dashes = 40 unique combos).
+_DASH_PATTERNS = ["solid", "dash", "dot", "dashdot"]
+
+
+def _adaptive_legend(n_items: int) -> dict:
+    """
+    Return Plotly legend kwargs that switch from horizontal (compact, ≤7 items)
+    to vertical sidebar layout (>7 items) to prevent legend overflow.
+    """
+    if n_items <= 7:
+        return dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+    else:
+        return dict(
+            orientation="v", yanchor="top", y=1.0, xanchor="left", x=1.02,
+            font=dict(size=10),
+        )
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG & CSS
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Investment Strategy Engine",
+    page_title="ZETETIC",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -409,6 +446,7 @@ st.markdown("""
     .model-opus { border-left: 4px solid #8B5CF6; }
     .model-sonnet { border-left: 4px solid #3B82F6; }
     .model-ollama { border-left: 4px solid #10B981; }
+    .model-ollama-cloud { border-left: 4px solid #1D8335; }
     .model-gemini { border-left: 4px solid #EA4335; }
     div[data-testid="stExpander"] { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 8px; }
     .reset-warning { background-color: #FEF2F2; border: 2px solid #EF4444;
@@ -463,8 +501,8 @@ with st.sidebar:
     else:
         _ollama_reachable = False
 
-    # Provider options — Ollama only if locally reachable
-    PROVIDERS = ["Anthropic", "xAI (Grok)", "Google (Gemini)"]
+    # Provider options — Ollama Local only if locally reachable; Cloud always available
+    PROVIDERS = ["Anthropic", "xAI (Grok)", "Google (Gemini)", "Ollama (Cloud)"]
     if _ollama_reachable:
         PROVIDERS.append("Ollama (Local)")
 
@@ -473,13 +511,15 @@ with st.sidebar:
         "Anthropic": "anthropic",
         "xAI (Grok)": "xai",
         "Google (Gemini)": "google",
+        "Ollama (Cloud)": "ollama_cloud",
         "Ollama (Local)": "ollama",
     }
 
-    # Shared state: Ollama URL + timeout + cached model list (fetched once)
+    # Shared state: Ollama URL + timeout + cached model lists (fetched once)
     ollama_url = "http://localhost:11434"
     ollama_timeout = 180
-    _ollama_models_cache = None  # populated on first Ollama slot
+    _ollama_models_cache = None        # populated on first Ollama Local slot
+    _ollama_cloud_models_cache = None  # populated on first Ollama Cloud slot
 
     # Store per-slot API keys alongside the active_models list
     active_models = []     # [(provider_key, display_label), ...]
@@ -558,7 +598,42 @@ with st.sidebar:
             )
             active_models.append(("google", model_name))
 
-        # ── Ollama slot (only shown when locally available) ────────────
+        # ── Ollama Cloud slot (always available) ──────────────────────
+        elif provider_key == "ollama_cloud":
+            if "ollama_cloud" not in api_keys:
+                api_keys["ollama_cloud"] = st.text_input(
+                    "Ollama Cloud API Key",
+                    type="password",
+                    help="Get one at ollama.com → Account → API Keys",
+                    key="ollama_cloud_api_key",
+                )
+            else:
+                st.caption("_Using Ollama Cloud key from above_")
+
+            # Fetch cloud models once (requires API key)
+            cloud_key = api_keys.get("ollama_cloud", "")
+            if cloud_key:
+                if _ollama_cloud_models_cache is None:
+                    with st.spinner("Fetching Ollama Cloud models..."):
+                        _ollama_cloud_models_cache = get_available_ollama_cloud_models(cloud_key)
+
+                if _ollama_cloud_models_cache:
+                    model_name = st.selectbox(
+                        "Model",
+                        options=_ollama_cloud_models_cache,
+                        key=f"ollama_cloud_model_{slot}",
+                        help=f"Found {len(_ollama_cloud_models_cache)} model(s) on ollama.com",
+                    )
+                    active_models.append(("ollama_cloud", model_name))
+                else:
+                    st.warning(
+                        "No models returned from Ollama Cloud. "
+                        "Check your API key and ollama.com account."
+                    )
+            else:
+                st.caption("Enter your API key to see available cloud models.")
+
+        # ── Ollama Local slot (only shown when locally available) ─────
         elif provider_key == "ollama":
             # Show URL + timeout inputs once, share across Ollama slots
             if _ollama_models_cache is None:
@@ -767,12 +842,17 @@ with st.sidebar:
         for name, u in model_usages.items():
             cost = u.get("estimated_cost_usd", 0)
             tokens = u.get("total_tokens", 0)
-            cost_label = f"${cost:.4f}" if cost > 0 else "Free (local)"
+            if cost > 0:
+                cost_label = f"${cost:.4f}"
+            elif u.get("provider") == "ollama_cloud":
+                cost_label = "Free (subscription)"
+            else:
+                cost_label = "Free (local)"
             st.caption(f"**{name}:** {tokens:,} tokens · {cost_label}")
 
         st.divider()
 
-    st.caption("Built with Streamlit • Anthropic • xAI • Google • Ollama • Yahoo Finance")
+    st.caption("Built with Streamlit • Anthropic • xAI • Google • Ollama (Local + Cloud) • Yahoo Finance")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -842,8 +922,8 @@ Before generating strategies, configure these settings in the **sidebar** (left 
 | Setting | What to do |
 |---------|-----------|
 | **Number of models** | Choose 1–3 models to compare side by side |
-| **Provider per slot** | Pick **Anthropic** (Claude), **xAI** (Grok), **Google** (Gemini), or **Ollama** (local, if available) for each slot |
-| **API Keys** | Enter your Anthropic key ([console.anthropic.com](https://console.anthropic.com)) and/or xAI key ([console.x.ai](https://console.x.ai)) — only shown when you select that provider |
+| **Provider per slot** | Pick **Anthropic** (Claude), **xAI** (Grok), **Google** (Gemini), **Ollama Cloud** (hosted at ollama.com), or **Ollama Local** (your machine, if available) for each slot |
+| **API Keys** | Enter your key for each cloud provider — Anthropic ([console.anthropic.com](https://console.anthropic.com)), xAI ([console.x.ai](https://console.x.ai)), Google ([aistudio.google.com](https://aistudio.google.com/apikey)), or Ollama Cloud ([ollama.com](https://ollama.com)) — only shown when you select that provider |
 | **Starting Capital** | Set how much hypothetical money to invest ($1K–$1M) |
 | **Benchmark** | Pick an index to compare against (S&P 500 is the default) |
 | **Backtest Date** | Set in the **Strategies** tab — choose "Historical date" to simulate investing on a past date and see how it would have performed |
@@ -969,8 +1049,11 @@ with tab_thesis:
             # Validate API keys for each provider that's in use
             missing_keys = []
             for provider, _ in active_models:
-                if provider in ("anthropic", "xai", "google") and not api_keys.get(provider, ""):
-                    label = {"anthropic": "Anthropic", "xai": "xAI", "google": "Google"}.get(provider, provider)
+                if provider in ("anthropic", "xai", "google", "ollama_cloud") and not api_keys.get(provider, ""):
+                    label = {
+                        "anthropic": "Anthropic", "xai": "xAI",
+                        "google": "Google", "ollama_cloud": "Ollama Cloud",
+                    }.get(provider, provider)
                     if label not in missing_keys:
                         missing_keys.append(label)
             if missing_keys:
@@ -1005,7 +1088,7 @@ with tab_thesis:
                         model_results[display_key] = result
                         model_usages[display_key] = usage
                         model_providers[display_key] = provider
-                        st.toast(f"✅ {display_key} complete!", icon="✅")
+                        st.toast(f"{display_key} complete!", icon="✅")
                     except Exception as e:
                         st.error(f"**{display_key}** failed: {e}")
                         model_results[display_key] = {"error": str(e)}
@@ -1085,30 +1168,46 @@ with tab_strategies:
 
             # If user changed the date after executing, offer to clear executions only
             # (preserves LLM-generated strategies — no re-generation / token cost)
-            existing_dates = {
-                p["start_date"]
-                for p in st.session_state.get("portfolios", {}).values()
-            }
-            if existing_dates and execution_date not in existing_dates:
-                st.warning(
-                    f"⚠️ You have portfolios executed on **{', '.join(sorted(existing_dates))}** "
-                    f"but the current date is **{execution_date}**."
-                )
-                if st.button(
-                    "🔄 Clear executions & re-execute on new date",
-                    help="Clears all executed portfolios but keeps your AI-generated strategies. "
-                         "No new tokens will be spent — you can re-execute immediately.",
-                    key="reset_executions_btn",
+            # existing_dates = {
+            #     p["start_date"]
+            #     for p in st.session_state.get("portfolios", {}).values()
+            # }
+            # if existing_dates and execution_date not in existing_dates:
+            #     st.warning(
+            #         f"⚠️ You have portfolios executed on **{', '.join(sorted(existing_dates))}** "
+            #         f"but the current date is **{execution_date}**."
+            #     )
+            #     if st.button(
+            #         "🔄 Clear executions & re-execute on new date",
+            #         help="Clears all executed portfolios but keeps your AI-generated strategies. "
+            #              "No new tokens will be spent — you can re-execute immediately.",
+            #         key="reset_executions_btn",
+            #     ):
+            #         # Clear only execution state — preserve strategies + thesis
+            #         st.session_state["portfolios"] = {}
+            #         st.session_state["trades_executed"] = {}
+            #         st.session_state["report_generated"] = False
+            #         # Also clear import tracking (imports were executed on old date)
+            #         st.session_state["_import_file_ids"] = []
+            #         st.session_state["_import_file_to_keys"] = {}
+            #         st.toast("Executions cleared — strategies preserved. Ready to re-execute!", icon="✅")
+            #         st.rerun()
+            
+            if st.button(
+                "🔄 Clear executions & re-execute on new date",
+                help="Clears all executed portfolios but keeps your AI-generated strategies. "
+                "No new tokens will be spent — you can re-execute immediately.",
+                key="reset_executions_btn",
                 ):
-                    # Clear only execution state — preserve strategies + thesis
-                    st.session_state["portfolios"] = {}
-                    st.session_state["trades_executed"] = {}
-                    st.session_state["report_generated"] = False
-                    # Also clear import tracking (imports were executed on old date)
-                    st.session_state["_import_file_ids"] = []
-                    st.session_state["_import_file_to_keys"] = {}
-                    st.toast("Executions cleared — strategies preserved. Ready to re-execute!", icon="✅")
-                    st.rerun()
+                # Clear only execution state — preserve strategies + thesis
+                st.session_state["portfolios"] = {}
+                st.session_state["trades_executed"] = {}
+                st.session_state["report_generated"] = False
+                # Also clear import tracking (imports were executed on old date)
+                st.session_state["_import_file_ids"] = []
+                st.session_state["_import_file_to_keys"] = {}
+                st.toast("Executions cleared — strategies preserved. Ready to re-execute!", icon="✅")
+                st.rerun()
 
             st.divider()
 
@@ -1180,10 +1279,11 @@ with tab_strategies:
             for model_label, result in valid_models.items():
                 provider = st.session_state.get("model_providers", {}).get(model_label, "")
                 color = {
-                    "anthropic": "#8B5CF6",  # Purple for Claude
-                    "xai": "#E44332",        # Red for Grok
-                    "google": "#EA4335",     # Google red for Gemini
-                    "ollama": "#10B981",     # Green for local
+                    "anthropic": "#8B5CF6",    # Purple for Claude
+                    "xai": "#E44332",          # Red for Grok
+                    "google": "#EA4335",       # Google red for Gemini
+                    "ollama_cloud": "#1D8335", # Dark green for Ollama Cloud
+                    "ollama": "#10B981",       # Green for local
                 }.get(provider, "#6B7280")
 
                 st.markdown(
@@ -1194,10 +1294,13 @@ with tab_strategies:
                 # Show token usage and cost for this model
                 usage = st.session_state.get("model_usages", {}).get(model_label, {})
                 if usage.get("total_tokens"):
-                    cost_str = (
-                        f"Free (local)" if usage.get("estimated_cost_usd", 0) == 0
-                        else f"${usage['estimated_cost_usd']:.4f}"
-                    )
+                    if usage.get("estimated_cost_usd", 0) == 0:
+                        cost_str = (
+                            "Free (subscription)" if provider == "ollama_cloud"
+                            else "Free (local)"
+                        )
+                    else:
+                        cost_str = f"${usage['estimated_cost_usd']:.4f}"
                     st.caption(
                         f"🔢 **Tokens:** {usage['input_tokens']:,} in / "
                         f"{usage['output_tokens']:,} out "
@@ -1295,6 +1398,17 @@ with tab_dashboard:
     if not portfolios:
         st.info("Execute at least one strategy in the Strategies tab to see the dashboard.")
     else:
+        # ── Stable color/dash mapping — keyed by portfolio label ─────────
+        # Built from the FULL portfolios dict (insertion order), so every
+        # label always gets the same color/dash regardless of which subset
+        # a particular chart renders.  Report tab builds an identical map
+        # from the same dict.
+        port_color_map = {}
+        port_dash_map = {}
+        for i, label in enumerate(portfolios.keys()):
+            port_color_map[label] = _PALETTE[i % len(_PALETTE)]
+            port_dash_map[label] = _DASH_PATTERNS[i // len(_PALETTE) % len(_DASH_PATTERNS)]
+
         # ── Batch-fetch all tickers across all portfolios ─────────────────
         all_tickers = set()
         for port in portfolios.values():
@@ -1360,30 +1474,6 @@ with tab_dashboard:
                         icon="💡",
                     )
 
-        # ── Risk-Adjusted Metrics ──────────────────────────────────────────
-        if any_with_history:
-            st.subheader("Risk-Adjusted Metrics")
-            history_ports = [(l, p) for l, p in portfolios.items() if has_history[l]]
-
-            # One full-width row per strategy — avoids nested columns truncation
-            for label, port in history_ports:
-                m = compute_metrics(port, current_prices)
-                st.markdown(f"**{port['model_label']}** · {port['strategy_name']}")
-
-                # All 7 metrics in a single row across the full page width
-                c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-                c1.metric("Sharpe", f"{m['sharpe_ratio']:.2f}")
-                c2.metric("Sortino", f"{m['sortino_ratio']:.2f}")
-                c3.metric("Calmar", f"{m['calmar_ratio']:.2f}")
-                c4.metric("Max DD", f"{m['max_drawdown']:.1%}")
-                c5.metric("Volatility", f"{m['volatility']:.1%}")
-                c6.metric("Win Rate", f"{m['win_rate']:.0%}")
-                c7.metric("Profit Factor", f"{m['profit_factor']:.2f}")
-
-            # Collapsed glossary for metric explanations
-            with st.expander("ℹ️ What do these metrics mean?", expanded=False):
-                st.markdown(_METRIC_GLOSSARY)
-
         # ── Performance Chart ─────────────────────────────────────────────
         if any_with_history:
             st.subheader("Performance vs Benchmark")
@@ -1434,12 +1524,13 @@ with tab_dashboard:
                     ))
 
             # Plot each portfolio's historical value
-            colors = ["#8B5CF6", "#3B82F6", "#10B981", "#F59E0B", "#EF4444"]
             if not hist_prices.empty:
+                port_count = sum(1 for _, p in portfolios.items() if not _is_day_zero(p))
                 for i, (label, port) in enumerate(portfolios.items()):
                     if _is_day_zero(port):
                         continue  # Skip day-0 portfolios in chart
-                    color = colors[i % len(colors)]
+                    color = port_color_map[label]
+                    dash = port_dash_map[label]
                     port_series = pd.Series(index=hist_prices.index, dtype=float)
 
                     for date in hist_prices.index:
@@ -1486,7 +1577,7 @@ with tab_dashboard:
                             if chart_mode == "Percentage (%)" else port_series.values,
                         mode="lines",
                         name=f"{port['model_label']}: {port['strategy_name']}",
-                        line=dict(color=color, width=2.5),
+                        line=dict(color=color, width=2.5, dash=dash),
                     ))
 
             if chart_mode == "Percentage (%)":
@@ -1502,7 +1593,7 @@ with tab_dashboard:
                 title="Portfolio Value Over Time",
                 yaxis_title=y_title, xaxis_title="Date",
                 height=500, template="plotly_white",
-                legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                legend=_adaptive_legend(port_count + 1),  # +1 for benchmark
                 hovermode="x unified",
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -1519,6 +1610,30 @@ with tab_dashboard:
                 "- Come back later and **import the JSON** from the sidebar to see real returns",
                 icon="⏳",
             )
+
+        # ── Risk-Adjusted Metrics ──────────────────────────────────────────
+        if any_with_history:
+            st.subheader("Risk-Adjusted Metrics")
+            history_ports = [(l, p) for l, p in portfolios.items() if has_history[l]]
+
+            # One full-width row per strategy — avoids nested columns truncation
+            for label, port in history_ports:
+                m = compute_metrics(port, current_prices)
+                st.markdown(f"**{port['model_label']}** · {port['strategy_name']}")
+
+                # All 7 metrics in a single row across the full page width
+                c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+                c1.metric("Sharpe", f"{m['sharpe_ratio']:.2f}")
+                c2.metric("Sortino", f"{m['sortino_ratio']:.2f}")
+                c3.metric("Calmar", f"{m['calmar_ratio']:.2f}")
+                c4.metric("Max DD", f"{m['max_drawdown']:.1%}")
+                c5.metric("Volatility", f"{m['volatility']:.1%}")
+                c6.metric("Win Rate", f"{m['win_rate']:.0%}")
+                c7.metric("Profit Factor", f"{m['profit_factor']:.2f}")
+
+            # Collapsed glossary for metric explanations
+            with st.expander("ℹ️ What do these metrics mean?", expanded=False):
+                st.markdown(_METRIC_GLOSSARY)
 
         # ── Per-portfolio Holdings ────────────────────────────────────────
         st.subheader("Holdings Detail")
@@ -1650,30 +1765,29 @@ with tab_report:
 
             thesis_text = st.session_state.get("thesis_text", "No thesis provided.")
 
-            if st.button("📊 Generate Performance Report", type="primary", use_container_width=True):
-                with st.spinner("Computing metrics and building report..."):
-                    md_report = generate_markdown_report(
-                        thesis=thesis_text,
-                        portfolios=report_portfolios,
-                        all_prices=rpt_prices,
-                        benchmark_ticker=benchmark_ticker,
-                        initial_capital=initial_capital,
-                        start_date=execution_date,
-                    )
-                    with open("/tmp/report.md", "w") as f:
-                        f.write(md_report)
+            # Auto-generate report — regenerates on each visit with latest prices
+            with st.spinner("Computing metrics and building report..."):
+                md_report = generate_markdown_report(
+                    thesis=thesis_text,
+                    portfolios=report_portfolios,
+                    all_prices=rpt_prices,
+                    benchmark_ticker=benchmark_ticker,
+                    initial_capital=initial_capital,
+                    start_date=execution_date,
+                )
+                with open("/tmp/report.md", "w") as f:
+                    f.write(md_report)
 
-                    generate_excel_report(
-                        thesis=thesis_text,
-                        portfolios=report_portfolios,
-                        all_prices=rpt_prices,
-                        benchmark_ticker=benchmark_ticker,
-                        initial_capital=initial_capital,
-                        start_date=execution_date,
-                        filepath="/tmp/report.xlsx",
-                    )
-                    st.session_state["report_generated"] = True
-                st.success("Report generated!")
+                generate_excel_report(
+                    thesis=thesis_text,
+                    portfolios=report_portfolios,
+                    all_prices=rpt_prices,
+                    benchmark_ticker=benchmark_ticker,
+                    initial_capital=initial_capital,
+                    start_date=execution_date,
+                    filepath="/tmp/report.xlsx",
+                )
+                st.session_state["report_generated"] = True
 
             if st.session_state.get("report_generated"):
                 # ── Inline metrics ────────────────────────────────────────
@@ -1718,63 +1832,106 @@ with tab_report:
                 if len(all_rpt_metrics) > 0:
                     st.subheader("Performance Charts")
 
-                    # ── Consistent color map: each model gets ONE color everywhere ──
-                    _PALETTE = ["#8B5CF6", "#3B82F6", "#10B981", "#F59E0B", "#EF4444"]
+                    # ── Build color/dash/legend maps from shared constants ──
+                    # Color/dash assigned from FULL portfolios dict (same
+                    # insertion order as Dashboard tab) so every label gets
+                    # the same color across both tabs.
+                    all_portfolios = st.session_state.get("portfolios", {})
                     rpt_labels = list(all_rpt_metrics.keys())
-                    color_map = {}  # {exec_key: hex}
+                    n_strats = len(rpt_labels)
+                    color_map = {}   # {exec_key: hex}
+                    dash_map = {}    # {exec_key: dash pattern}
                     legend_map = {}  # {exec_key: "Model: Strategy"}
-                    for i, label in enumerate(rpt_labels):
-                        port = report_portfolios[label]
+                    for i, label in enumerate(all_portfolios.keys()):
                         color_map[label] = _PALETTE[i % len(_PALETTE)]
+                        dash_map[label] = _DASH_PATTERNS[i // len(_PALETTE) % len(_DASH_PATTERNS)]
+                    for label in rpt_labels:
+                        port = report_portfolios[label]
                         legend_map[label] = f"{port['model_label']}: {port['strategy_name']}"
 
-                    # ── Chart 1: Return Comparison ────────────────────────────
-                    # Each model is a trace (one color) with two grouped bars
+                    # ── Chart 1: Return Comparison (heatmap) ──────────────────
                     return_metrics = [
-                        ("Total Return", "total_return_pct"),
-                        ("Ann. Return", "annualized_return"),
-                        ("Net Return", "net_return_pct"),
+                        ("Total Return %", "total_return_pct"),
+                        ("Ann. Return %", "annualized_return"),
+                        ("Net Return %", "net_return_pct"),
                     ]
-                    fig_returns = go.Figure()
+                    # Build matrix: rows = strategies, cols = metrics
+                    ret_z = []
+                    ret_text = []
+                    ret_y_labels = []
                     for label in rpt_labels:
                         m = all_rpt_metrics[label]
-                        fig_returns.add_trace(go.Bar(
-                            name=legend_map[label],
-                            x=[rm[0] for rm in return_metrics],
-                            y=[m[rm[1]] * 100 for rm in return_metrics],
-                            marker_color=color_map[label],
-                        ))
+                        row_vals = [m[rm[1]] * 100 for rm in return_metrics]
+                        ret_z.append(row_vals)
+                        ret_text.append([f"{v:+.2f}%" for v in row_vals])
+                        ret_y_labels.append(legend_map[label])
+
+                    fig_returns = go.Figure(data=go.Heatmap(
+                        z=ret_z,
+                        x=[rm[0] for rm in return_metrics],
+                        y=ret_y_labels,
+                        text=ret_text,
+                        texttemplate="%{text}",
+                        textfont=dict(size=13),
+                        colorscale="RdYlGn",
+                        zmid=0,
+                        colorbar=dict(title="%"),
+                        hovertemplate="%{y}<br>%{x}: %{text}<extra></extra>",
+                    ))
                     fig_returns.update_layout(
-                        title="Return Comparison (%)",
-                        yaxis_title="Return (%)", barmode="group",
-                        height=400, template="plotly_white",
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="left", x=0),
+                        title="Return Comparison",
+                        height=max(250, 50 * n_strats + 100),
+                        template="plotly_white",
+                        yaxis=dict(autorange="reversed"),
+                        margin=dict(l=250),
                     )
                     st.plotly_chart(fig_returns, use_container_width=True)
 
-                    # ── Chart 2: Risk-Adjusted Ratios ─────────────────────────
-                    # Same pattern: each model is a trace, x-axis = ratio names
+                    # ── Chart 2: Risk-Adjusted Ratios (heatmap) ───────────────
                     ratio_keys = [
                         ("Sharpe", "sharpe_ratio"),
                         ("Sortino", "sortino_ratio"),
                         ("Calmar", "calmar_ratio"),
+                        ("Win Rate %", "win_rate"),
+                        ("Profit Factor", "profit_factor"),
                     ]
-                    fig_risk = go.Figure()
+                    risk_z = []
+                    risk_text = []
+                    risk_y_labels = []
                     for label in rpt_labels:
                         m = all_rpt_metrics[label]
-                        fig_risk.add_trace(go.Bar(
-                            name=legend_map[label],
-                            x=[rk[0] for rk in ratio_keys],
-                            y=[m[rk[1]] for rk in ratio_keys],
-                            marker_color=color_map[label],
-                        ))
+                        row_vals = []
+                        row_text = []
+                        for rk_name, rk_key in ratio_keys:
+                            val = m[rk_key]
+                            if rk_key == "win_rate":
+                                val_display = val * 100  # Normalize to % for heatmap
+                                row_text.append(f"{val:.0%}")
+                            else:
+                                val_display = val
+                                row_text.append(f"{val:.2f}")
+                            row_vals.append(val_display)
+                        risk_z.append(row_vals)
+                        risk_text.append(row_text)
+                        risk_y_labels.append(legend_map[label])
+
+                    fig_risk = go.Figure(data=go.Heatmap(
+                        z=risk_z,
+                        x=[rk[0] for rk in ratio_keys],
+                        y=risk_y_labels,
+                        text=risk_text,
+                        texttemplate="%{text}",
+                        textfont=dict(size=13),
+                        colorscale="RdYlGn",
+                        colorbar=dict(title="Value"),
+                        hovertemplate="%{y}<br>%{x}: %{text}<extra></extra>",
+                    ))
                     fig_risk.update_layout(
                         title="Risk-Adjusted Ratios",
-                        yaxis_title="Ratio", barmode="group",
-                        height=400, template="plotly_white",
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="left", x=0),
+                        height=max(250, 50 * n_strats + 100),
+                        template="plotly_white",
+                        yaxis=dict(autorange="reversed"),
+                        margin=dict(l=250),
                     )
                     st.plotly_chart(fig_risk, use_container_width=True)
 
@@ -1796,8 +1953,7 @@ with tab_report:
                         xaxis_title="Annualized Volatility (%)",
                         yaxis_title="Max Drawdown (%)",
                         height=400, template="plotly_white",
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="left", x=0),
+                        legend=_adaptive_legend(n_strats),
                     )
                     st.plotly_chart(fig_vol, use_container_width=True)
 
@@ -1825,14 +1981,51 @@ with tab_report:
                         with pie_cols[i % len(pie_cols)]:
                             st.plotly_chart(fig_pie, use_container_width=True)
 
-                    # ── Chart 5: Drawdown Timeline ────────────────────────────
+                    # ── Overlay chart strategy selector ────────────────────────
+                    # For charts 5-7 (overlay/line charts), let user pick which
+                    # strategies to display — default top 5 by total return.
                     has_snapshots = any(
                         len(report_portfolios[l].get("performance_snapshots", [])) > 2
                         for l in rpt_labels
                     )
                     if has_snapshots:
+                        # Rank by total return, default to top 5
+                        ranked_labels = sorted(
+                            rpt_labels,
+                            key=lambda l: all_rpt_metrics[l]["total_return_pct"],
+                            reverse=True,
+                        )
+                        default_top = ranked_labels[:5]
+
+                        if n_strats > 5:
+                            st.markdown("---")
+                            st.markdown(
+                                "**Overlay charts** — select up to 5 strategies to display "
+                                "(defaulting to top 5 by total return):"
+                            )
+                            overlay_selection = st.multiselect(
+                                "Strategies to overlay",
+                                options=[legend_map[l] for l in ranked_labels],
+                                default=[legend_map[l] for l in default_top],
+                                max_selections=5,
+                                key="overlay_chart_selection",
+                            )
+                            # Map display names back to keys
+                            reverse_legend = {v: k for k, v in legend_map.items()}
+                            overlay_labels = [
+                                reverse_legend[name]
+                                for name in overlay_selection
+                                if name in reverse_legend
+                            ]
+                        else:
+                            # ≤5 strategies: show all, no selector needed
+                            overlay_labels = rpt_labels
+
+                        n_overlay = len(overlay_labels)
+
+                        # ── Chart 5: Drawdown Timeline ────────────────────────
                         fig_dd = go.Figure()
-                        for label in rpt_labels:
+                        for label in overlay_labels:
                             port = report_portfolios[label]
                             snaps = port.get("performance_snapshots", [])
                             if len(snaps) < 2:
@@ -1847,22 +2040,23 @@ with tab_report:
                                 x=drawdown.index, y=drawdown.values,
                                 mode="lines", fill="tozeroy",
                                 name=legend_map[label],
-                                line=dict(color=color_map[label]),
+                                line=dict(
+                                    color=color_map[label],
+                                    dash=dash_map[label],
+                                ),
                             ))
                         fig_dd.update_layout(
                             title="Drawdown Over Time",
                             yaxis_title="Drawdown (%)", xaxis_title="Date",
                             height=400, template="plotly_white",
-                            legend=dict(orientation="h", yanchor="bottom",
-                                        y=1.02, xanchor="left", x=0),
+                            legend=_adaptive_legend(n_overlay),
                         )
                         st.plotly_chart(fig_dd, use_container_width=True)
 
-                    # ── Chart 6: Rolling Sharpe (30-day window) ───────────────
-                    if has_snapshots:
+                        # ── Chart 6: Rolling Sharpe (30-day window) ───────────
                         fig_rs = go.Figure()
                         has_rolling_data = False
-                        for label in rpt_labels:
+                        for label in overlay_labels:
                             port = report_portfolios[label]
                             snaps = port.get("performance_snapshots", [])
                             if len(snaps) < 30:
@@ -1875,7 +2069,6 @@ with tab_report:
                             rets = rets.replace([np.inf, -np.inf], np.nan).dropna()
                             if len(rets) < 30:
                                 continue
-                            # Rolling 30-day Sharpe (annualized)
                             daily_rf = (1 + 0.05) ** (1/252) - 1
                             excess = rets - daily_rf
                             roll_mean = excess.rolling(30).mean()
@@ -1889,7 +2082,10 @@ with tab_report:
                                     y=rolling_sharpe.values,
                                     mode="lines",
                                     name=legend_map[label],
-                                    line=dict(color=color_map[label], width=2),
+                                    line=dict(
+                                        color=color_map[label], width=2,
+                                        dash=dash_map[label],
+                                    ),
                                 ))
                         if has_rolling_data:
                             fig_rs.add_hline(y=0, line_dash="dot",
@@ -1899,16 +2095,14 @@ with tab_report:
                                 yaxis_title="Sharpe Ratio",
                                 xaxis_title="Date",
                                 height=400, template="plotly_white",
-                                legend=dict(orientation="h", yanchor="bottom",
-                                            y=1.02, xanchor="left", x=0),
+                                legend=_adaptive_legend(n_overlay),
                             )
                             st.plotly_chart(fig_rs, use_container_width=True)
 
-                    # ── Chart 7: Daily Return Distribution ────────────────────
-                    if has_snapshots:
+                        # ── Chart 7: Daily Return Distribution ────────────────
                         fig_dist = go.Figure()
                         has_dist_data = False
-                        for label in rpt_labels:
+                        for label in overlay_labels:
                             port = report_portfolios[label]
                             snaps = port.get("performance_snapshots", [])
                             if len(snaps) < 5:
@@ -1936,8 +2130,7 @@ with tab_report:
                                 yaxis_title="Frequency",
                                 barmode="overlay",
                                 height=400, template="plotly_white",
-                                legend=dict(orientation="h", yanchor="bottom",
-                                            y=1.02, xanchor="left", x=0),
+                                legend=_adaptive_legend(n_overlay),
                             )
                             st.plotly_chart(fig_dist, use_container_width=True)
 

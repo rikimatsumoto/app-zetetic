@@ -2,17 +2,18 @@
 strategy_generator.py
 =====================
 Multi-model strategy generation engine.
-Supports Anthropic, xAI (Grok), Google Gemini, and local Ollama models
+Supports Anthropic, xAI (Grok), Google Gemini, Ollama Local, and Ollama Cloud
 via a unified interface.
 
 The key idea: the SAME thesis goes to up to 3 different models independently,
 so the user can compare how model selection affects strategy implementation.
 
 Supported providers:
-  - Anthropic: Claude Opus 4, Claude Sonnet 4
-  - xAI:       Grok 3, Grok 3 Mini
-  - Google:    Gemini 2.5 Flash, Gemini 1.5 Pro
-  - Ollama:    any model running locally (llama3, qwen, mistral, etc.)
+  - Anthropic:     Claude Opus 4, Claude Sonnet 4
+  - xAI:           Grok 3, Grok 3 Mini
+  - Google:        Gemini 2.5 Flash, Gemini 1.5 Pro
+  - Ollama Local:  any model running on local machine (llama3, qwen, mistral…)
+  - Ollama Cloud:  models hosted on ollama.com via API key (same API, remote host)
 """
 
 import json
@@ -96,6 +97,8 @@ GEMINI_PRICING = {
     "gemini-1.5-pro":   {"input": 1.25, "output": 5.00},
 }
 # Ollama models run locally — $0 API cost, but we still track tokens for reference
+# Ollama Cloud uses subscription pricing ($0 Free / $20 Pro / $100 Max per month)
+# — no published per-token rates, so we track tokens but report cost as $0.
 
 
 def _empty_usage(provider: str, model: str) -> dict:
@@ -117,6 +120,33 @@ def get_available_ollama_models(ollama_url: str = "http://localhost:11434") -> l
     """
     try:
         resp = requests.get(f"{ollama_url}/api/tags", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            return [m["name"] for m in data.get("models", [])]
+    except (requests.ConnectionError, requests.Timeout):
+        pass
+    return []
+
+
+def get_available_ollama_cloud_models(api_key: str) -> list:
+    """
+    Query Ollama Cloud (ollama.com) for available models using Bearer auth.
+
+    The Ollama Cloud API is identical to the local API — same endpoints,
+    same response format — but hosted at https://ollama.com with an API key.
+
+    Args:
+        api_key: Ollama Cloud API key from ollama.com account settings.
+
+    Returns:
+        List of model name strings, or empty list on failure.
+    """
+    try:
+        resp = requests.get(
+            "https://ollama.com/api/tags",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
         if resp.status_code == 200:
             data = resp.json()
             return [m["name"] for m in data.get("models", [])]
@@ -338,6 +368,88 @@ def generate_strategies_ollama(thesis: str, model: str = "llama3",
     return _parse_strategy_json(raw_text), usage
 
 
+# ── Provider: Ollama Cloud (ollama.com hosted models) ─────────────────────────
+
+def generate_strategies_ollama_cloud(thesis: str, model: str,
+                                     api_key: str, timeout: int = 180) -> tuple:
+    """
+    Generate strategies via Ollama Cloud (ollama.com).
+
+    Uses the same /api/chat endpoint as local Ollama but routed to
+    https://ollama.com with Bearer token authentication.
+
+    Ollama Cloud uses subscription-based pricing (Free / $20 Pro / $100 Max),
+    not per-token billing, so estimated_cost_usd is always $0.
+
+    Args:
+        thesis:   User's investment thesis.
+        model:    Model name string from the cloud model list.
+        api_key:  Ollama Cloud API key (from ollama.com account).
+        timeout:  Request timeout in seconds.
+
+    Returns:
+        (strategies_dict, usage_dict) tuple.
+    """
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": STRATEGY_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Here is my investment thesis:\n\n{thesis}\n\n"
+                    "Please generate 3-4 actionable investment strategies ranked by risk level. "
+                    "Respond ONLY with valid JSON, no other text."
+                ),
+            },
+        ],
+        "stream": False,
+        "format": "json",
+    }
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        resp = requests.post(
+            "https://ollama.com/api/chat",
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except requests.ConnectionError:
+        raise ConnectionError(
+            "Cannot reach Ollama Cloud at ollama.com. Check your internet connection."
+        )
+    except requests.HTTPError as e:
+        # Surface helpful message for auth failures
+        if resp.status_code == 401:
+            raise ValueError(
+                "Ollama Cloud authentication failed — check your API key at ollama.com."
+            )
+        raise ValueError(f"Ollama Cloud API error ({resp.status_code}): {e}")
+
+    data = resp.json()
+    raw_text = data.get("message", {}).get("content", "")
+    if not raw_text:
+        raise ValueError(f"Empty response from Ollama Cloud model '{model}'.")
+
+    # Same token metadata format as local Ollama
+    prompt_tokens = data.get("prompt_eval_count", 0)
+    completion_tokens = data.get("eval_count", 0)
+
+    usage = {
+        "provider": "ollama_cloud",
+        "model": model,
+        "input_tokens": prompt_tokens,
+        "output_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "estimated_cost_usd": 0.0,  # Subscription pricing — no per-token cost
+    }
+
+    return _parse_strategy_json(raw_text), usage
+
+
 # ── Provider: xAI (Grok models) ──────────────────────────────────────────────
 
 def generate_strategies_xai(thesis: str, api_key: str,
@@ -546,9 +658,10 @@ def generate_strategies(thesis: str, provider: str, model_name: str,
 
     Args:
         thesis:         User's investment narrative.
-        provider:       "anthropic", "xai", "google", or "ollama".
+        provider:       "anthropic", "xai", "google", "ollama", or "ollama_cloud".
         model_name:     Display name (Anthropic/xAI/Google) or model string (Ollama).
-        api_key:        API key for Anthropic, xAI, or Google (ignored for Ollama).
+        api_key:        API key for Anthropic, xAI, Google, or Ollama Cloud
+                        (ignored for local Ollama).
         ollama_url:     Ollama server URL (ignored for cloud providers).
         ollama_timeout: Request timeout in seconds for Ollama calls.
 
@@ -568,6 +681,8 @@ def generate_strategies(thesis: str, provider: str, model_name: str,
         return generate_strategies_gemini(thesis, api_key, model_id)
     elif provider == "ollama":
         return generate_strategies_ollama(thesis, model_name, ollama_url, timeout=ollama_timeout)
+    elif provider == "ollama_cloud":
+        return generate_strategies_ollama_cloud(thesis, model_name, api_key, timeout=ollama_timeout)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
