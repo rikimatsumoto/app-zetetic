@@ -5,7 +5,7 @@
  ▗▞▘  ▐▛▀▀▘  █  ▐▛▀▀▘  █    █  ▐▌   
 ▐▙▄▄▄▖▐▙▄▄▖  █  ▐▙▄▄▖  █  ▗▄█▄▖▝▚▄▄▖
                                     
-A Streamlit application that converts your investment thesis into executable strategies using **multiple AI models**, simulates those strategies with Yahoo Finance data, and provides comprehensive performance analysis with backtesting support and full AI cost transparency.
+A Streamlit application that converts your investment thesis into executable strategies using **multiple AI models**, simulates those strategies with Yahoo Finance data, and provides comprehensive performance analysis with backtesting support and full AI cost transparency. This project was built with the help of Claude Code.
 
 ## Features
 
