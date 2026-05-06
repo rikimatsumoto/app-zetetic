@@ -1,0 +1,75 @@
+# ═══════════════════════════════════════════════════════════════════════
+# models.toml — Model Registry & Pricing Configuration
+# ═══════════════════════════════════════════════════════════════════════
+#
+# This is the SINGLE file to edit when adding, removing, or updating
+# AI models. No Python code changes needed.
+#
+# Structure per provider:
+#   [provider.models]        — Display Name → API model identifier
+#   [provider.pricing.ID]    — Pricing per 1M tokens (input & output)
+#
+# To add a new model:
+#   1. Add a line under [provider.models]:  "Display Name" = "api-model-id"
+#   2. Add a pricing block: [provider.pricing.api-model-id]
+#      input = X.XX
+#      output = X.XX
+#
+# To remove a model:
+#   Delete both the model line and its pricing block.
+#
+# Ollama (Local + Cloud) models are fetched dynamically at runtime
+# and do not need entries here.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ── Anthropic ────────────────────────────────────────────────────────
+
+[anthropic.models]
+"Claude Opus 4"   = "claude-opus-4-20250514"
+"Claude Sonnet 4" = "claude-sonnet-4-20250514"
+
+[anthropic.pricing."claude-opus-4-20250514"]
+input  = 15.00
+output = 75.00
+
+[anthropic.pricing."claude-sonnet-4-20250514"]
+input  = 3.00
+output = 15.00
+
+
+# ── xAI ──────────────────────────────────────────────────────────────
+
+[xai.models]
+"Grok 3"      = "grok-3-latest"
+"Grok 3 Mini" = "grok-3-mini-latest"
+
+[xai.pricing."grok-3-latest"]
+input  = 3.00
+output = 15.00
+
+[xai.pricing."grok-3-mini-latest"]
+input  = 0.30
+output = 0.50
+
+
+# ── Google (Gemini) ──────────────────────────────────────────────────
+
+[google.models]
+"Gemini 2.5 Flash" = "gemini-2.5-flash"
+"Gemini 1.5 Pro"   = "gemini-1.5-pro"
+
+[google.pricing."gemini-2.5-flash"]
+input  = 0.15
+output = 0.60
+
+[google.pricing."gemini-1.5-pro"]
+input  = 1.25
+output = 5.00
+
+
+# ── Ollama (Local + Cloud) ──────────────────────────────────────────
+# Models are fetched dynamically from the Ollama API at runtime.
+# Local:  $0 (runs on your hardware)
+# Cloud:  Subscription-based ($0 Free / $20 Pro / $100 Max per month)
+#         No per-token charges — tokens are tracked but cost shows $0.
