@@ -1,4 +1,6 @@
+# Zetetic — Investment Strategy Engine
 
+<<<<<<< Updated upstream
 
 ▗▄▄▄▄▖▗▄▄▄▖▗▄▄▄▖▗▄▄▄▖▗▄▄▄▖▗▄▄▄▖ ▗▄▄▖
    ▗▞▘▐▌     █  ▐▌     █    █  ▐▌   
@@ -6,30 +8,33 @@
 ▐▙▄▄▄▖▐▙▄▄▖  █  ▐▙▄▄▖  █  ▗▄█▄▖▝▚▄▄▖
                                     
 A Streamlit application that converts your investment thesis into executable strategies using **multiple AI models**, simulates those strategies with Yahoo Finance data, and provides comprehensive performance analysis with backtesting support and full AI cost transparency. This project was built with the help of Claude Code.
+=======
+A Streamlit application that converts your investment thesis into executable strategies using **multiple AI models**, executes them with Yahoo Finance data, and provides comprehensive performance analysis with backtesting support, risk-adjusted metrics, and full AI cost transparency.
+>>>>>>> Stashed changes
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Model Comparison** | Up to 3 models at a time (Anthropic, xAI, Google Gemini, + Ollama locally) independently interpret the same thesis |
-| **Backtesting** | Set a historical start date to see how strategies would have performed |
-| **Internal Transaction Ledger** | Every trade is tracked in-memory with full audit trail |
-| **Risk-Adjusted Metrics** | Sharpe, Sortino, Calmar ratios + max drawdown, volatility, win rate, profit factor |
-| **Performance Reports** | Downloadable Markdown + Excel reports with 7 Plotly charts, model comparison, and thesis interpretation narratives |
+| **Multi-Model Comparison** | Up to 3 model slots, each independently configurable across 5 providers (Anthropic, xAI, Google Gemini, Ollama Cloud, Ollama Local) |
+| **Backtesting** | Set a historical start date to simulate how strategies would have performed |
+| **Risk-Adjusted Metrics** | Sharpe, Sortino, Calmar ratios plus Max Drawdown, Volatility, Win Rate, Profit Factor |
+| **7 Report Charts** | Heatmaps, scatter plots, composition pies, drawdown timelines, rolling Sharpe, return distributions — all scaling to 15 strategies |
 | **AI Cost Tracker** | Per-model token counts and estimated USD cost, with net-of-cost return calculations |
-| **Streamlit Cloud Ready** | Ollama auto-disables on cloud; 3 cloud providers always available |
+| **JSON Persistence** | Export portfolios as JSON, re-import days/weeks/months later to track real performance |
+| **Security-First Imports** | 10-layer validation on every uploaded JSON file |
 
 ## Architecture
 
 ```
                           ┌─ Tokens: 2,841 ─ Cost: $0.2340 ──┐
-User Thesis ──┬──▶ Claude Opus 4    ──▶ Strategy A ──▶ Execute ─┤
-              │   ┌─ Tokens: 2,103 ─ Cost: $0.0351 ──┐        │
-              ├──▶ Claude Sonnet 4  ──▶ Strategy B ──▶ Execute ─┤──▶ Compare vs Benchmark
-              │   ┌─ Tokens: 1,800 ─ Cost: $0.0009 ──┐        │         ▼
-              ├──▶ Gemini 2.5 Flash ──▶ Strategy C ──▶ Execute ─┤   Performance Report
-              │   ┌─ Tokens: 1,950 ─ Cost: $0 (local) ┐       │   (Markdown + Excel)
-              └──▶ Ollama (local)   ──▶ Strategy D ──▶ Execute ─┘   Net returns after AI cost
+User Thesis ──┬──▶ Claude Opus 4   ──▶ Strategy A ──▶ Execute ─┤
+              │   ┌─ Tokens: 1,950 ─ Cost: $0.0012 ──┐        │
+              ├──▶ Gemini 2.5 Flash ──▶ Strategy B ──▶ Execute ─┤──▶ Compare vs Benchmark
+              │   ┌─ Tokens: 2,103 ─ Cost: $0 (sub) ──┐       │         ▼
+              └──▶ Ollama Cloud     ──▶ Strategy C ──▶ Execute ─┘   Performance Report
+                                                                    (Markdown + Excel)
+                                                                    Net returns after AI cost
 ```
 
 ## Quick Start
@@ -37,40 +42,42 @@ User Thesis ──┬──▶ Claude Opus 4    ──▶ Strategy A ──▶ E
 ### 1. Install Dependencies
 
 ```bash
-cd streamlit-zetetic
-
-# Create virtual environment (recommended)
-python3 -m venv .venv
-source .venv/bin/activate  # or `.venv\Scripts\activate` on Windows
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. (Optional) Start Ollama for local models
-
-For more information, go to: https://docs.ollama.com
-
-```bash
-# Install from https://ollama.com
-ollama pull minimax-m2.5:cloud
-```
-
-> **Note:** Ollama is auto-detected. On Streamlit Cloud (or any environment without a local Ollama server), the option is silently hidden — no configuration needed.
-
-### 3. Run the App
+### 2. Run the App
 
 ```bash
 streamlit run app.py
 ```
 
-Opens at `http://localhost:8501`. Enter your API key(s) in the sidebar for your chosen provider(s).
+Opens at `http://localhost:8501`. Enter your API key(s) in the sidebar for whichever provider(s) you want to use.
+
+### 3. (Optional) Local Ollama Models
+
+```bash
+# Install from https://ollama.com
+ollama pull llama3.1
+ollama serve
+```
+
+When running locally, Ollama Local auto-detects available models. On Streamlit Cloud, Ollama Local is automatically hidden (no local GPU), but Ollama Cloud remains available with an API key from ollama.com.
+
+## Supported Providers
+
+| Provider | Models | API Key Required | Cost |
+|----------|--------|-----------------|------|
+| **Anthropic** | Claude Opus 4, Sonnet 4 | Yes | Per-token ($3–$75/1M tokens) |
+| **xAI** | Grok 3, Grok 3 Mini | Yes | Per-token ($0.30–$15/1M tokens) |
+| **Google** | Gemini 2.5 Flash, 1.5 Pro | Yes | Per-token ($0.15–$5/1M tokens) |
+| **Ollama Cloud** | Dynamic (fetched from account) | Yes (ollama.com) | Subscription ($0–$100/month) |
+| **Ollama Local** | Dynamic (auto-detected) | No | Free |
 
 ## Tab-by-Tab Walkthrough
 
 ### Guide Tab
 
-Beginner-friendly tutorial covering the full workflow, a table of every metric with practical "how to read it" guidance (e.g. "Sharpe above 1.0 = good; above 2.0 = excellent"), FAQ, and tips.
+Beginner-friendly tutorial covering the full workflow, FAQ, metric definitions with practical benchmarks (e.g. "Sharpe above 1.0 = good; above 2.0 = excellent"), and tips for getting the most out of the app.
 
 ### Tab 1 — Thesis
 
@@ -78,59 +85,61 @@ Enter your investment narrative. The same text goes to all selected models indep
 
 ### Tab 2 — Strategies
 
-Each model produces 3–4 ranked strategies (Conservative → Speculative). For each model you'll see:
+Each model produces 3–4 ranked strategies (Conservative → Speculative). For each you'll see allocation tables and pie charts, plus the model's rebalancing notes and time horizon advice. Controls include:
 
-- **Token & cost breakdown** — input/output tokens and estimated USD cost
-- Allocation tables and pie charts per strategy
-- One-click execution with live or historical prices (for backtesting)
+- **Execution date**: "Today (live prices)" or "Historical date (backtest)" with date picker
+- **Execute All**: one-click batch execution of all strategies across all models
+- **Per-strategy execute**: individual control for selective execution
+- **Execution reset**: clears executed portfolios while preserving generated strategies (avoids costly re-generation)
+- **JSON export**: download each portfolio for later re-import
 
 ### Tab 3 — Dashboard
 
-Live (or historical) portfolio view showing:
+Portfolio view with:
 
-- **KPI cards** with portfolio value, return %, AI cost, and net return (after AI cost)
-- **Risk-adjusted metrics** — 7 metric cards across 2 rows: Sharpe, Sortino, Calmar / Max Drawdown, Volatility, Win Rate, Profit Factor
-- **"ℹ️ What do these metrics mean?"** — collapsed expander with plain-English definitions and examples
-- Multi-line performance chart with **$/% toggle** (absolute value vs percentage return)
-- Detailed holdings table with gain/loss per ticker
-- Per-portfolio Excel + JSON download
-- **Transaction ledger** as collapsed diagnostic expander
+- **KPI cards** — portfolio value, return %, AI cost, and net return (after AI cost) per strategy, with day-0 gating
+- **Risk metrics** — 7 metrics per strategy in a full-width row: Sharpe, Sortino, Calmar, Max Drawdown, Volatility, Win Rate, Profit Factor
+- **Performance chart** — all portfolios vs benchmark with $/% toggle; lines differentiated by both color (10 palette) and dash pattern (4 styles) for up to 40 unique combos
+- **Holdings table** — per-ticker gain/loss with Excel + JSON export
+- **Transaction ledger** — collapsed diagnostic expander showing the full internal audit trail
+- **Metric glossary** — expandable reference explaining each metric with practical interpretation
 
 ### Tab 4 — Report
 
-Standardized performance analysis report, downloadable as Markdown or Excel:
+Auto-generated performance analysis, refreshed on each visit with latest prices:
 
-- **Key Metrics Comparison** table — Total Return, Net Return, Annualized Return, Max Drawdown, Volatility, Sharpe, Sortino, Calmar, Win Rate, Profit Factor, AI Cost, Best/Worst holdings
-- **"ℹ️ What do these metrics mean?"** — collapsed expander (same definitions as Dashboard)
-- **7 Plotly charts** (consistent model→color mapping across all):
-  1. Return comparison bar (Total / Annualized / Net)
-  2. Risk-adjusted ratios (Sharpe / Sortino / Calmar)
-  3. Risk profile scatter (Volatility vs Max Drawdown)
-  4. Portfolio composition donut pies
-  5. Drawdown timeline
-  6. Rolling Sharpe ratio (30-day window)
-  7. Daily return distribution histograms
-- **Thesis interpretation narratives** — comparative analysis of how each model translated the thesis into strategy, covering risk posture divergence, instrument mix, ticker overlap, and time horizon alignment
-- **Excel report** includes dedicated "Thesis Interpretation" sheet with per-model narratives and position reasoning tables
+- **Metrics comparison table** — all strategies side-by-side with return, risk, and cost columns
+- **7 interactive charts**:
+  1. Return Comparison (heatmap) — total, annualized, and net return
+  2. Risk Ratios (heatmap) — Sharpe, Sortino, Calmar, Win Rate, Profit Factor
+  3. Volatility vs Max Drawdown (scatter)
+  4. Portfolio Composition (donut pies, 3-column grid)
+  5. Drawdown Timeline (overlaid lines)
+  6. Rolling Sharpe (30-day window)
+  7. Daily Return Distribution (overlaid histograms)
+- Charts 5–7 include an **overlay limiter** when >5 strategies: select up to 5 to display, defaulting to top performers
+- **Downloads**: Markdown (.md) and Excel (.xlsx) reports
 
 ## Project Structure
 
 ```
 investment_app/
-├── app.py                  # Main Streamlit app (Guide + 4-tab layout, ~1830 lines)
-├── strategy_generator.py   # Multi-model LLM integration (4 providers, ~510 lines)
-│                            # Anthropic, xAI, Google Gemini, Ollama
-│                            # Token tracking + cost estimation per provider
-├── transaction_store.py    # Internal per-model transaction tracking
-│                            # Stores AI usage data alongside portfolio state
-├── portfolio_manager.py    # Excel portfolio file creation & export
-├── market_data.py          # Yahoo Finance: live, historical & backtest prices
-├── report_generator.py     # Markdown + Excel performance reports (~920 lines)
-│                            # Comparative narrative builder + 27+ metrics
-├── requirements.txt
-├── ARCHITECTURE.md         # Technical architecture
-├── CLAUDE_CONTEXT.md       # Development context for AI assistants
-└── README.md
+├── app.py                  # Streamlit UI controller (~2180 lines)
+├── strategy_generator.py   # Multi-provider LLM integration (~750 lines)
+│                            # 5 providers, token tracking, cost estimation
+├── models.toml             # Model names & pricing config
+│                            # Edit this file to add/remove/update models
+├── transaction_store.py    # Per-model transaction tracking (~240 lines)
+│                            # Holdings, cash, snapshots, AI usage data
+├── market_data.py          # Yahoo Finance wrapper (~160 lines)
+│                            # Live, historical, and backtest prices
+├── portfolio_manager.py    # Per-portfolio Excel export (~160 lines)
+├── report_generator.py     # Metrics engine + report builder (~920 lines)
+│                            # 27+ metrics, comparative narrative, Excel/Markdown
+├── ARCHITECTURE.md         # Technical architecture reference
+├── CLAUDE_CONTEXT.md       # Development history and context for AI assistants
+├── README.md
+└── requirements.txt
 ```
 
 ## Dependencies
@@ -143,21 +152,20 @@ investment_app/
 | `openpyxl` | Excel file creation (`.xlsx`) |
 | `pandas` | Data manipulation |
 | `plotly` | Interactive charts |
-| `requests` | HTTP client for xAI, Google Gemini, and Ollama APIs |
-| `numpy` | Numerical computation (volatility, Sharpe, Sortino, etc.) |
+| `requests` | HTTP client for xAI, Gemini, Ollama APIs |
+| `numpy` | Numerical computation (volatility, ratios) |
 
 ## Sidebar Configuration
 
 | Setting | Description |
 |---------|-------------|
-| **Provider per slot** | Pick **Anthropic** (Claude), **xAI** (Grok), **Google** (Gemini), or **Ollama** (local, if available) |
-| **API Key** | Shown contextually per provider; Ollama needs none |
+| **Model Slots (1–3)** | Each slot selects a provider + model independently |
+| **API Keys** | Shown contextually per selected provider |
 | **Starting Capital** | $1,000 – $1,000,000 (default $10,000) |
 | **Benchmark** | S&P 500, Dow Jones, NASDAQ, Russell 2000 |
-| **Backtest Date** | Toggle on to use a historical execution date (back to 2024) |
+| **Reset** | Multi-step confirmation: Click → Confirm → Type "DELETE" → Execute |
 | **JSON Import** | Multi-file uploader with per-file add/remove |
-| **Reset** | 2-step confirmation: Click → Confirm → Execute |
-| **AI Cost Tracker** | Always-visible running total of tokens and cost across all models |
+| **AI Cost Tracker** | Always-visible running total of tokens and cost |
 
 ## AI Cost Tracking
 
@@ -167,49 +175,64 @@ The app tracks token usage and estimates costs at every level:
 |-------|-------------|
 | **After generation** (Tab 1) | Total tokens and cost across all models |
 | **Strategy headers** (Tab 2) | Per-model input/output tokens and cost |
-| **Dashboard KPIs** (Tab 3) | AI cost and net return (portfolio return minus AI cost) per portfolio |
+| **Dashboard KPIs** (Tab 3) | AI cost and net return per portfolio |
 | **Sidebar tracker** | Persistent running total, always visible |
-| **Report metrics** (Tab 4) | AI cost, tokens, net return columns in comparison tables |
-| **Excel report** | Dedicated rows for AI cost and net return in the Summary sheet |
+| **Report metrics** (Tab 4) | AI cost and net return columns in comparison table |
+| **Excel report** | Dedicated rows for AI cost and net return |
 
-### Pricing Used
+Pricing is defined per provider in `strategy_generator.py`. Ollama (Local and Cloud) shows $0 — local is free, cloud is subscription-based with no per-token charges.
 
-| Model | Input (per 1M tokens) | Output (per 1M tokens) |
-|-------|----------------------|------------------------|
-| Claude Opus 4 | $15.00 | $75.00 |
-| Claude Sonnet 4 | $3.00 | $15.00 |
-| Grok 3 | $3.00 | $15.00 |
-| Grok 3 Mini | $0.30 | $0.50 |
-| Gemini 2.5 Flash | $0.10 | $0.40 |
-| Gemini 1.5 Pro | $1.25 | $5.00 |
-| Ollama (any) | $0 (local) | $0 (local) |
+## Report Metrics
 
-Prices are defined in `strategy_generator.py` → `ANTHROPIC_PRICING` / `XAI_PRICING` / `GEMINI_PRICING`. Update them if providers adjust pricing.
-
-## Reset Safety
-
-The reset function requires confirmation to prevent accidental data loss:
-
-1. Click "Reset All Data"
-2. Confirm "Yes" (or cancel)
-
-All portfolios, transactions, strategies, reports, and temporary files are permanently deleted.
-
-## Report Metrics Explained
-
-| Metric | What It Measures | How to Read It |
+| Metric | What It Measures | Good Benchmark |
 |--------|-----------------|----------------|
-| **Total Return** | (Current Value − Initial) / Initial | +15% = grew 15%. Negative = lost money |
-| **Net Return** | Total Return minus AI cost | Compare to Total Return to see if AI cost is material |
-| **Annualized Return** | Return normalized to a yearly rate | 8–12% annually is a solid benchmark |
-| **Max Drawdown** | Largest peak-to-trough decline | Lower is better. Above 30% = aggressive risk |
-| **Volatility** | Annualized std dev of daily returns | Under 15% = stable; above 30% = very bumpy |
-| **Sharpe Ratio** | (Ann. Return − Risk-Free Rate) / Volatility | Above 1.0 = good; above 2.0 = excellent |
-| **Sortino Ratio** | Like Sharpe but only penalises downside | Higher = better. Sortino > Sharpe means upside volatility dominates |
-| **Calmar Ratio** | Annualized Return / Max Drawdown | Above 1.0 = good; above 3.0 = excellent |
-| **Win Rate** | % of trading days with positive return | 50–55% typical; above 55% = consistent |
-| **Profit Factor** | Sum of gains / sum of losses | Above 1.0 = gains outweigh losses; above 1.5 = strong |
+| **Total Return** | (Current − Initial) / Initial | Positive, above benchmark |
+| **Annualized Return** | Return normalized to yearly rate | Above risk-free rate (5%) |
+| **Net Return** | Total return minus AI generation cost | Positive after costs |
+| **Max Drawdown** | Largest peak-to-trough decline | Below 20% |
+| **Volatility** | Annualized std dev of daily returns | Below 20% |
+| **Sharpe Ratio** | Risk-adjusted return (vs risk-free rate) | Above 1.0 good, above 2.0 excellent |
+| **Sortino Ratio** | Like Sharpe but penalizes only downside volatility | Above 1.5 good |
+| **Calmar Ratio** | Annualized return / max drawdown | Above 1.0 good |
+| **Win Rate** | % of days with positive returns | Above 52% |
+| **Profit Factor** | Total gains / total losses | Above 1.5 good |
+
+## JSON Persistence Workflow
+
+The app is stateless between sessions. To track performance over time:
+
+1. **Execute** strategies (live or backtest)
+2. **Download** portfolio JSON from the Dashboard
+3. **Close** the app — come back days, weeks, or months later
+4. **Upload** the JSON(s) via the sidebar importer
+5. The app replays price history from execution date to today and shows real returns
+
+Multiple JSON files can be imported simultaneously. Each file is independently validated with 10 security checks before loading.
+
+## Planned: Portfolio Rebalancing
+
+The LLM already generates rebalancing advice (e.g. "rebalance quarterly when any position drifts more than 5%") — currently displayed but not acted upon. Planned implementation:
+
+**Phase 1 — Mechanical Rebalancing**: Store original target weights alongside the portfolio. A simulation engine will step through dates and apply rebalancing trades when drift or schedule triggers fire, using historical prices. Works identically for backtested and forward-looking portfolios.
+
+**Phase 2 — LLM-Assisted Rebalancing**: Send the original thesis + current portfolio state to the LLM, which returns updated target weights. Same execution pipeline as mechanical, but with AI-refreshed targets.
+
+## Updating Models
+
+All model names and pricing live in `models.toml`. To add a new model (e.g. Gemini 3 Flash), just add two entries:
+
+```toml
+# Under [google.models], add:
+"Gemini 3 Flash (Preview)" = "gemini-3-flash-preview"
+
+# Add a new pricing block:
+[google.pricing."gemini-3-flash-preview"]
+input  = 0.10
+output = 0.40
+```
+
+No Python code changes needed. The app picks up changes on next restart.
 
 ## Disclaimer
 
-This tool is for learning and experimentation only. Always consult a qualified financial advisor before making real investment decisions. The strategy is automatically generated from large language models and may contain errors, omissions, or outdated information. It is provided "as is," without warranties of any kind, express or implied. This application is not investment, legal, security, or policy advice and must not be relied upon for decision-making. You are responsible for independently verifying facts and conclusions with primary sources and qualified professionals. Neither the author nor providers of this service accept any liability for losses or harms arising from use of this content. No duty to update is assumed.
+This tool is for **educational and hypothetical purposes only**. It does not constitute financial advice. Past performance does not guarantee future results. Always consult a qualified financial advisor before making real investment decisions.
