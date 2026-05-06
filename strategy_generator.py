@@ -8,17 +8,74 @@ via a unified interface.
 The key idea: the SAME thesis goes to up to 3 different models independently,
 so the user can compare how model selection affects strategy implementation.
 
+Model names and pricing are loaded from models.toml — edit that file to add,
+remove, or update models without touching Python code.
+
 Supported providers:
-  - Anthropic:     Claude Opus 4, Claude Sonnet 4
-  - xAI:           Grok 3, Grok 3 Mini
-  - Google:        Gemini 2.5 Flash, Gemini 1.5 Pro
-  - Ollama Local:  any model running on local machine (llama3, qwen, mistral…)
-  - Ollama Cloud:  models hosted on ollama.com via API key (same API, remote host)
+  - Anthropic:     loaded from models.toml (e.g. Claude Opus 4, Claude Sonnet 4)
+  - xAI:           loaded from models.toml (e.g. Grok 3, Grok 3 Mini)
+  - Google:        loaded from models.toml (e.g. Gemini 2.5 Flash, Gemini 1.5 Pro)
+  - Ollama Local:  dynamically fetched from local Ollama server
+  - Ollama Cloud:  dynamically fetched from ollama.com API
 """
 
 import json
+import tomllib
 import requests
 import anthropic
+from pathlib import Path
+
+
+# ── Load model registry & pricing from config file ────────────────────────────
+# All model names and pricing live in models.toml — edit that file to add,
+# remove, or update models.  No Python changes needed.
+
+def _load_model_config() -> dict:
+    """
+    Load models.toml from the same directory as this script.
+
+    Returns the parsed TOML dict.  Falls back to empty provider sections
+    if the file is missing or malformed, so the app still starts.
+    """
+    config_path = Path(__file__).parent / "models.toml"
+    try:
+        with open(config_path, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        print(f"⚠ models.toml not found at {config_path} — using empty model config")
+        return {}
+    except tomllib.TOMLDecodeError as e:
+        print(f"⚠ models.toml parse error: {e} — using empty model config")
+        return {}
+
+_CONFIG = _load_model_config()
+
+def _get_models(provider: str) -> dict:
+    """Extract {display_name: api_id} for a provider from config."""
+    return dict(_CONFIG.get(provider, {}).get("models", {}))
+
+def _get_pricing(provider: str) -> dict:
+    """Extract {api_id: {"input": X, "output": Y}} for a provider from config."""
+    raw = _CONFIG.get(provider, {}).get("pricing", {})
+    # TOML nested tables come through as {api_id: {"input": N, "output": N}}
+    return {k: {"input": v.get("input", 0), "output": v.get("output", 0)}
+            for k, v in raw.items()}
+
+# ── Model registry — loaded from models.toml ─────────────────────────────────
+# These dicts are the same shape as before, so all existing code (imports in
+# app.py, dispatch in generate_strategies, etc.) works without changes.
+
+ANTHROPIC_MODELS  = _get_models("anthropic")
+XAI_MODELS        = _get_models("xai")
+GEMINI_MODELS     = _get_models("google")
+
+# ── Pricing ($ per 1M tokens) — loaded from models.toml ──────────────────────
+ANTHROPIC_PRICING = _get_pricing("anthropic")
+XAI_PRICING       = _get_pricing("xai")
+GEMINI_PRICING    = _get_pricing("google")
+# Ollama models run locally — $0 API cost, but we still track tokens for reference
+# Ollama Cloud uses subscription pricing ($0 Free / $20 Pro / $100 Max per month)
+# — no published per-token rates, so we track tokens but report cost as $0.
 
 
 # ── System prompt shared by ALL models ─────────────────────────────────────────
@@ -61,44 +118,6 @@ The risk_score should be 1 (lowest risk) through 4 (highest risk), matching the 
 Ensure every ticker is a real, currently tradeable symbol.
 RESPOND ONLY WITH THE JSON. NO OTHER TEXT."""
 
-
-# ── Model registry ─────────────────────────────────────────────────────────────
-# Maps human-friendly display names → API model identifiers
-
-ANTHROPIC_MODELS = {
-    "Claude Opus 4": "claude-opus-4-20250514",
-    "Claude Sonnet 4": "claude-sonnet-4-20250514",
-}
-
-XAI_MODELS = {
-    "Grok 3": "grok-3-latest",
-    "Grok 3 Mini": "grok-3-mini-latest",
-}
-
-GEMINI_MODELS = {
-    "Gemini 2.5 Flash": "gemini-2.5-flash",
-    "Gemini 1.5 Pro": "gemini-1.5-pro",
-}
-
-# ── Pricing ($ per 1M tokens) — used for cost estimation ──────────────────────
-# Sources: Anthropic, xAI, & Google pricing pages. Update these if pricing changes.
-ANTHROPIC_PRICING = {
-    "claude-opus-4-20250514":   {"input": 15.00, "output": 75.00},
-    "claude-sonnet-4-20250514": {"input":  3.00, "output": 15.00},
-}
-
-XAI_PRICING = {
-    "grok-3-latest":      {"input": 3.00, "output": 15.00},
-    "grok-3-mini-latest": {"input": 0.30, "output":  0.50},
-}
-
-GEMINI_PRICING = {
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    "gemini-1.5-pro":   {"input": 1.25, "output": 5.00},
-}
-# Ollama models run locally — $0 API cost, but we still track tokens for reference
-# Ollama Cloud uses subscription pricing ($0 Free / $20 Pro / $100 Max per month)
-# — no published per-token rates, so we track tokens but report cost as $0.
 
 
 def _empty_usage(provider: str, model: str) -> dict:
